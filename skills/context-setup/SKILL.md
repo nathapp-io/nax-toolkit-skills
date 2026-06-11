@@ -46,9 +46,14 @@ If any context.md exceeds these limits, look for content that is ephemeral, obvi
 Run the following to understand the repo structure:
 
 ```bash
-# Check for monorepo indicators
-ls pnpm-workspace.yaml turbo.json nx.json go.work Cargo.toml 2>/dev/null
-grep -q '"workspaces"' package.json 2>/dev/null && echo "bun/npm workspaces detected"
+# Check for monorepo workspace config files
+ls pnpm-workspace.yaml turbo.json nx.json go.work 2>/dev/null
+
+# Check for workspace field in package.json (npm/Bun workspaces)
+grep -q '"workspaces"' package.json 2>/dev/null && echo "npm/Bun workspaces detected"
+
+# Check for Rust workspace (single Cargo.toml can exist in single-package projects too)
+grep -q '\[workspace\]' Cargo.toml 2>/dev/null && echo "Cargo workspace detected"
 
 # Check for existing context files
 find .nax -name "context.md" 2>/dev/null
@@ -57,9 +62,9 @@ find .nax -name "context.md" 2>/dev/null
 ls apps/ packages/ services/ libs/ 2>/dev/null | head -30
 ```
 
-**Single-package repo:** Has one `package.json` (or equivalent manifest) at the root with no workspace config and no `apps/` / `packages/` layout. Proceed to Step 2.
+**Single-package repo:** Has one manifest at the root with no workspace config and no `apps/` / `packages/` directory layout. Proceed to Step 2.
 
-**Monorepo:** Has `pnpm-workspace.yaml`, `turbo.json`, `go.work`, a `workspaces` field in `package.json`, or an `apps/` / `packages/` directory structure. Proceed to Step 3.
+**Monorepo:** Has `pnpm-workspace.yaml`, `turbo.json`, `go.work`, a `workspaces` field in `package.json`, `[workspace]` in `Cargo.toml`, or an `apps/` / `packages/` directory structure. Proceed to Step 3.
 
 ---
 
@@ -67,7 +72,7 @@ ls apps/ packages/ services/ libs/ 2>/dev/null | head -30
 
 Create or update `.nax/context.md` with these sections. Skip any section where you have nothing substantive to say — an empty section wastes tokens.
 
-```markdown
+````markdown
 # <Project Name> — <One-phrase purpose>
 
 <One or two sentences describing what this project does and for whom.>
@@ -114,7 +119,7 @@ src/
 - <where unit tests live, e.g. beside source as *.spec.ts>
 - <where integration/e2e tests live>
 - <what to keep covered when changing behaviour>
-```
+````
 
 **Content quality checklist before saving:**
 - [ ] Is the project description ≤2 sentences and accurate?
@@ -135,19 +140,22 @@ Run:
 # List all packages/apps
 ls apps/ packages/ services/ libs/ 2>/dev/null
 
-# Check which have context.md already
+# Check which already have context.md files
 find .nax/mono -name "context.md" 2>/dev/null
 
-# Check which have their own package manifest (helps confirm package list)
+# Confirm package list by looking for manifests (note: directories without manifests may exist)
 find apps packages services libs -maxdepth 2 \( -name "package.json" -o -name "go.mod" -o -name "pyproject.toml" -o -name "Cargo.toml" \) 2>/dev/null | head -20
 ```
 
 Note the full list of packages. You will write a root context.md (Step 4a) and one per-package context.md per package (Step 4b).
 
-**Path convention for per-package files:** The `.nax/mono/` path mirrors the repo-relative package path. Examples:
-- Package at `apps/api/` → context at `.nax/mono/apps/api/context.md`
-- Package at `packages/shared/` → context at `.nax/mono/packages/shared/context.md`
-- Package at `services/worker/` → context at `.nax/mono/services/worker/context.md`
+**Path convention for per-package files:** The `.nax/mono/` path mirrors the repo-relative package path. `nax generate` discovers files up to 2 levels deep under `.nax/mono/`. Examples:
+
+| Package location | Per-package context file |
+|:-----------------|:-------------------------|
+| `apps/api/` | `.nax/mono/apps/api/context.md` |
+| `packages/shared/` | `.nax/mono/packages/shared/context.md` |
+| `services/worker/` | `.nax/mono/services/worker/context.md` |
 
 ---
 
@@ -155,13 +163,15 @@ Note the full list of packages. You will write a root context.md (Step 4a) and o
 
 The root context.md is **slim and cross-cutting**. Its job is to describe the monorepo shape and rules that apply to all packages. Per-package details go in the per-package files.
 
-```markdown
+````markdown
 # <Project Name> — <One-phrase purpose>
 
 <One or two sentences describing what this monorepo does.>
 
-> Edit this file to update agent context — do not edit `CLAUDE.md` or `AGENTS.md` directly.
-> Run `nax generate` after changes to regenerate. Per-package context lives under `.nax/mono/<pkg>/context.md`.
+> Edit this file to update AI agent context — do not edit `CLAUDE.md`, `AGENTS.md`,
+> `.cursorrules`, `GEMINI.md`, or other generated agent files directly.
+> Run `nax generate` after changes to regenerate. Per-package context lives
+> under `.nax/mono/<pkg>/context.md`.
 
 ## Monorepo Shape
 
@@ -215,7 +225,7 @@ Read the matching package context before making package-local changes:
 - `.nax/mono/<package>/context.md`
 
 If a new package is added, create its context file under `.nax/mono/<package>/context.md`.
-```
+````
 
 **Monorepo root slim checklist:**
 - [ ] Does the root say anything that belongs in only one package? Move it.
@@ -233,7 +243,7 @@ The file path mirrors the repo-relative package path:
 - Package at `apps/api/` → write to `.nax/mono/apps/api/context.md`
 - Package at `packages/shared/` → write to `.nax/mono/packages/shared/context.md`
 
-```markdown
+````markdown
 # <Project Name> <Package Name> Context
 
 This is the package-specific context for `<repo-relative-package-path>/`.
@@ -283,7 +293,7 @@ It should not:
 Useful scripts:
 - `<package-specific test command>`
 - `<package-specific build command>`
-```
+````
 
 **Per-package checklist:**
 - [ ] Does any content here duplicate the root context.md? Remove it.
@@ -303,13 +313,16 @@ After writing all context.md files, run:
 nax generate
 ```
 
-A single `nax generate` handles everything: it generates the root `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`, `GEMINI.md`, and `codex.md` from `.nax/context.md`, and then automatically discovers and generates per-package agent files for every `.nax/mono/*/context.md` it finds.
+A single `nax generate` handles everything: it generates the root `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`, `GEMINI.md`, and `codex.md` from `.nax/context.md`, and then automatically discovers and generates per-package agent files for every `.nax/mono/*/context.md` and `.nax/mono/*/*/context.md` it finds (up to 2 levels deep).
 
-To regenerate only a single package without touching the root:
+To regenerate only a single package without touching the root, pass the repo-relative package path (not the `.nax/mono/` path):
 
 ```bash
-nax generate --package <repo-relative-package-path>
-# Example: nax generate --package apps/api
+# Correct: pass the repo-relative package path
+nax generate --package apps/api
+
+# Wrong: do not pass the .nax/mono/ path
+# nax generate --package .nax/mono/apps/api
 ```
 
 **Verify the root output:**
@@ -323,10 +336,10 @@ Confirm:
 - The root context content appears below it
 - No broken formatting (unclosed code blocks, broken tables)
 
-For monorepos, also verify one per-package generated file. The generated file lands in the package directory:
+For monorepos, also verify one per-package generated file. The output lands in the package directory:
 
 ```bash
-# Example: if you wrote .nax/mono/apps/api/context.md
+# Example for apps/api — adjust to a real package in your repo
 head -60 apps/api/CLAUDE.md
 ```
 
@@ -334,21 +347,29 @@ head -60 apps/api/CLAUDE.md
 
 ## Step 6: Commit
 
-Stage the source files and the generated agent files:
+Stage the source files and all generated agent files:
 
 ```bash
-# Always stage source and common generated files
+# Stage source context files
 git add .nax/context.md .nax/mono/
+
+# Stage root-level generated files
 git add CLAUDE.md AGENTS.md .cursorrules .windsurfrules GEMINI.md codex.md 2>/dev/null
 
 # For monorepos: stage per-package generated files
-# Use git status to find them and adjust the glob to match your package layout
-git add $(git ls-files --others --modified | grep -E "(CLAUDE|AGENTS)\.md$") 2>/dev/null
-
-git commit -m "docs(context): add nax context files and regenerate agent context"
+# Find all new or modified CLAUDE.md / AGENTS.md files outside .git/
+find . -maxdepth 4 \( -name "CLAUDE.md" -o -name "AGENTS.md" \) -not -path "./.git/*" | xargs git add 2>/dev/null
 ```
 
-If the `git ls-files` approach doesn't capture everything, inspect `git status` and stage any remaining generated files manually.
+Then commit. Use `add` for new context files or `update` for existing ones being revised:
+
+```bash
+# New context files
+git commit -m "docs(context): add nax context files and regenerate agent context"
+
+# Updating existing context files
+git commit -m "docs(context): update nax context files and regenerate agent context"
+```
 
 ---
 
@@ -360,7 +381,7 @@ If the `git ls-files` approach doesn't capture everything, inspect `git status` 
 | Per-package context.md repeats root content | Remove the duplicate — root is always loaded too |
 | Commands listed but don't actually work | Test each command before including it |
 | Engineering rules are generic advice, not codebase-specific | Replace with actual invariants agents violate |
-| context.md >200 lines and growing | Audit for ephemeral, obvious, or doc-worthy content; trim or link |
-| `CLAUDE.md` edited manually | Edit `.nax/context.md` instead; regenerate |
+| Single-package context.md exceeds 150 lines; monorepo root exceeds 200 | Audit for ephemeral, obvious, or doc-worthy content; trim or link |
+| `CLAUDE.md` or other generated agent files edited manually | Edit `.nax/context.md` instead; regenerate with `nax generate` |
 | No per-package files in a monorepo | Agents get a generic root context with no package-specific guidance — write the per-package files |
 | Per-package path doesn't mirror package path | `.nax/mono/apps/api/context.md` for `apps/api/`, not `.nax/mono/api/context.md` |
