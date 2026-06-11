@@ -406,6 +406,8 @@ git commit -m "docs(rules): update nax canonical rules"
 
 `rules-setup` covers deliberate authoring. For ongoing discovery — finding patterns that emerge from real runs — use the **curator**.
 
-The curator is a built-in post-run plugin that runs automatically after every nax run. It mines run artifacts with 6 deterministic heuristics and proposes additions or deletions to `.nax/rules/curator-suggestions.md` for human review. The highest-value signal (H1 — repeated review findings) requires `review.audit.enabled: true` in `.nax/config.json`.
+The curator is a built-in post-run plugin that runs automatically after every nax run. It mines run artifacts with 6 deterministic heuristics and proposes additions or deletions to `.nax/rules/curator-suggestions.md`. The highest-value signal (H1 — repeated review findings) requires `review.audit.enabled: true` in `.nax/config.json`.
 
-See `references/curator.md` for the full heuristics table, CLI commands, apply workflow, and threshold tuning.
+**Always present proposals to the user and wait for explicit approval before applying anything.** Never auto-apply curator output.
+
+See `references/curator.md` for the full heuristics table, CLI commands, the user-approval presentation format, and threshold tuning.

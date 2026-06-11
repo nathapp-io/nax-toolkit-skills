@@ -42,10 +42,40 @@ nax curator gc
 
 ## Review and apply workflow
 
-1. After a run: `nax curator status` — read `curator-proposals.md`
-2. Check (`[x]`) any proposals worth adopting
-3. `nax curator commit <runId>` — applies checked proposals (appends for `add`, removes lines for `drop`), opens modified files in `$EDITOR` for final review
-4. Does **not** commit to git — stage and commit the result manually
+**Never apply proposals without explicit user approval.** The agent presents proposals and waits; the user decides what to adopt.
+
+1. Run `nax curator status` and read the full output of `curator-proposals.md`
+2. Present all proposals to the user — grouped by severity (HIGH first), with the evidence line for each
+3. **Wait for the user to say which proposals to adopt.** Do not proceed until the user responds.
+4. For each approved proposal:
+   - Mark it `[x]` in `curator-proposals.md`
+5. Run `nax curator commit <runId>` — applies only the checked proposals (appends for `add`, removes lines for `drop`)
+6. Show the user the resulting diff in the modified files and ask for final confirmation before staging
+7. `git add` and `git commit` only after the user confirms
+
+**Does not commit to git automatically** — always require explicit user sign-off.
+
+### Presenting proposals to the user
+
+Show proposals in this format, grouped by action and sorted HIGH → MED → LOW:
+
+```
+Curator found N proposals for run <runId>:
+
+ADD to .nax/rules/curator-suggestions.md
+  [HIGH] H1 — "unsafe-op" review finding fired 4× across stories s1, s2, s3, s4
+  [MED]  H3 — story s7 needed 3 rectification cycles (context may be missing)
+
+DROP from .nax/rules/curator-suggestions.md
+  [LOW]  H5 — chunk "redis-cache-setup" excluded as stale in 3 runs
+
+ADVISORY (no file change)
+  [LOW]  H6 — story s9 had 2 consecutive fix iterations with no change
+
+Which proposals should I apply? (list numbers, "all", or "none")
+```
+
+Wait for the user's response before doing anything.
 
 ## Tuning thresholds
 
@@ -65,10 +95,11 @@ If proposals are too noisy, increase thresholds. If too quiet, decrease them:
 ## Combined authoring workflow
 
 1. Run nax on your feature stories
-2. `nax curator status` — review H1/H3/H4 proposals for rule candidates
-3. Check proposals worth adopting, run `nax curator commit <runId>`
-4. Move content from `.nax/rules/curator-suggestions.md` into the appropriate rule file with proper frontmatter
-5. Run `nax rules lint` to validate neutrality
-6. Commit the updated rule files
+2. `nax curator status` — fetch and present proposals to the user (see format above)
+3. Wait for user approval — apply only approved proposals via `nax curator commit <runId>`
+4. Show the user the diff in modified files, confirm before staging
+5. Move adopted content from `.nax/rules/curator-suggestions.md` into the appropriate rule file with proper frontmatter (see main `rules-setup` skill for how)
+6. Run `nax rules lint` to validate neutrality
+7. Commit the updated rule files after user confirms
 
 The curator surfaces **what** to add; `rules-setup` guides **how** to write it well.
