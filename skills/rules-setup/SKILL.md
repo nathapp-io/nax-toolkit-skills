@@ -1,6 +1,6 @@
 ---
 name: rules-setup
-description: Guide for writing good .nax/rules/*.md files — the agent-neutral canonical store that replaces per-agent files like CLAUDE.md, AGENTS.md, and .cursorrules. Covers frontmatter (priority, paths, appliesTo), content quality, neutrality requirements, single-package and monorepo layouts, and validation with nax rules lint. Also covers the curator (nax curator status/commit) — the built-in post-run plugin that mines run artifacts with 6 heuristics to surface rule candidates. Ends with lint pass and a commit.
+description: Guide for writing good .nax/rules/*.md files — the agent-neutral canonical store that replaces per-agent files like CLAUDE.md, AGENTS.md, and .cursorrules. Covers frontmatter (priority, paths, appliesTo), content quality, neutrality requirements, single-package and monorepo layouts, and validation with nax rules lint. Includes a pointer to the curator (references/curator.md) for ongoing rule discovery from run artifacts. Ends with lint pass and a commit.
 ---
 
 # rules-setup
@@ -404,70 +404,8 @@ git commit -m "docs(rules): update nax canonical rules"
 
 ## Ongoing rule discovery: the curator
 
-`rules-setup` covers initial authoring and deliberate updates. For ongoing discovery — finding patterns that emerge from real runs — use the **curator**.
+`rules-setup` covers deliberate authoring. For ongoing discovery — finding patterns that emerge from real runs — use the **curator**.
 
-The curator is a built-in post-run plugin (`nax-curator`) that runs automatically after every nax run. It mines run artifacts using 6 deterministic heuristics and writes proposals to `<runOutputDir>/curator-proposals.md`:
+The curator is a built-in post-run plugin that runs automatically after every nax run. It mines run artifacts with 6 deterministic heuristics and proposes additions or deletions to `.nax/rules/curator-suggestions.md` for human review. The highest-value signal (H1 — repeated review findings) requires `review.audit.enabled: true` in `.nax/config.json`.
 
-| Heuristic | Signal | Default threshold | Proposal target |
-|:----------|:-------|:-----------------|:----------------|
-| **H1** — Repeated review finding | Same review rule ID fired ≥ N times across stories | 2 occurrences | Add to `.nax/rules/curator-suggestions.md` |
-| **H2** — Empty pull-tool result | Same keyword returned 0 results ≥ N times | 2 occurrences | Add to `.nax/features/<id>/context.md` |
-| **H3** — Repeated rectification cycle | Story needed ≥ N fix cycles | 2 cycles | Add to `.nax/features/<id>/context.md` (HIGH severity) |
-| **H4** — Escalation chain | Same tier escalation path (e.g. fast→powerful) ≥ N times | 2 occurrences | Add to `.nax/features/<id>/context.md` |
-| **H5** — Stale chunk excluded | Same context chunk excluded as stale across ≥ N runs | 2 runs | Drop from `.nax/rules/curator-suggestions.md` |
-| **H6** — Fix-cycle unchanged | Story had ≥ N consecutive fix iterations with no change | 2 streak | Advisory only (no auto-target) |
-
-For the curator to produce high-quality H1 signals, enable review audit in `.nax/config.json`:
-
-```json
-{
-  "review": { "audit": { "enabled": true } }
-}
-```
-
-### Reviewing and applying curator proposals
-
-```bash
-# Show proposal markdown for the latest run
-nax curator status
-
-# Show proposals for a specific run
-nax curator status --run <runId>
-
-# Re-run heuristics on existing observations (useful after tuning thresholds)
-nax curator dryrun
-```
-
-Proposals are rendered as a markdown checklist. Review `curator-proposals.md`, check (`[x]`) any you want to apply, then commit them to the canonical files:
-
-```bash
-nax curator commit <runId>
-```
-
-`nax curator commit` applies checked proposals — appending content for `add` proposals, removing lines for `drop` proposals — then opens modified files in `$EDITOR` for final review. It does not commit to git; you stage and commit the result manually.
-
-### Tuning thresholds
-
-If proposals are too noisy (firing on one-off mistakes), increase thresholds. If they are too quiet (real patterns not surfacing), decrease them:
-
-```json
-{
-  "curator": {
-    "thresholds": {
-      "repeatedFinding": 3,
-      "rectifyAttempts": 3
-    }
-  }
-}
-```
-
-### Rule authoring workflow with curator
-
-1. Run nax on your feature stories as usual
-2. After the run: `nax curator status` — review H1/H3/H4 proposals for rule candidates
-3. Check proposals worth adopting, run `nax curator commit <runId>`
-4. Move content from `.nax/rules/curator-suggestions.md` into the appropriate rule file with proper frontmatter
-5. Run `nax rules lint` to validate neutrality
-6. Commit the updated rule files
-
-The curator surfaces **what** to add; `rules-setup` guides **how** to write it well.
+See `references/curator.md` for the full heuristics table, CLI commands, apply workflow, and threshold tuning.
