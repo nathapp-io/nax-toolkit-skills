@@ -1,5 +1,5 @@
 ---
-name: spec-review
+name: post-impl-review
 description: Post-implementation code review against a feature spec. Reads the spec (from .nax/features/<name>/spec.md, .nax/specs/*.md, or a user-provided path) and diffs changed code against the repo's default branch. Checks compliance (every AC/story covered?) and drift (does the implementation match the spec's approach, API shape, and constraints?). Prints severity-graded findings to the terminal with a single verdict. Use after completing a feature implementation to verify it matches the spec before merging.
 ---
 
@@ -7,11 +7,11 @@ description: Post-implementation code review against a feature spec. Reads the s
 
 Review changed code against a feature spec. Check compliance (every AC/story covered?) and drift (implementation deviates from spec approach, API shape, or constraints). Print severity-graded findings to the terminal with a unified verdict.
 
-**Announce at start:** "Using spec-review to review implementation against `<resolved-spec-path>`."
+**Announce at start:** "Using post-impl-review to review implementation against `<resolved-spec-path>`."
 
 ## Step 1: Resolve the spec
 
-`args` is the text the user typed after `/spec-review` when invoking the skill. For example, `/spec-review graphify-kb` gives `args = "graphify-kb"`, and `/spec-review` alone gives `args = ""`.
+`args` is the text the user typed after `/post-impl-review` when invoking the skill. For example, `/post-impl-review graphify-kb` gives `args = "graphify-kb"`, and `/post-impl-review` alone gives `args = ""`.
 
 Parse the invocation argument `args`.
 
@@ -52,7 +52,7 @@ Parse the invocation argument `args`.
   No spec found. Checked:
     .nax/features/*/spec.md
     .nax/specs/*.md
-  Pass a path or feature name: /spec-review <name|path>
+  Pass a path or feature name: /post-impl-review <name|path>
   ```
 
 Once resolved, print: `Spec: <resolved-path>`
@@ -108,7 +108,7 @@ Exclude these files from analysis (do not pass them to the model):
 **Size guard:** After filtering, if the remaining diff has more than 500 changed files or more than 8000 lines, print a warning and proceed:
 ```
 Warning: large diff (N files, M lines — exceeds size limit). Review may miss fine-grained details.
-Consider narrowing scope with /spec-review <feature-name>. Proceeding.
+Consider narrowing scope with /post-impl-review <feature-name>. Proceeding.
 ```
 
 **Empty diff guard:** After filtering, if no changed files remain, print and stop:
