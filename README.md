@@ -8,6 +8,7 @@ for nax-related skills that are *not* part of the spec workflow (which lives in
 |:------|:--------|
 | **nax-setup** | Set up nax in any repo — single-package OR workspace monorepo. Wires `.nax/config.json` (quality, review, context, precheck, execution) to the repo's REAL build/test/lint commands, and adds per-package `.nax/mono/<pkg>/config.json` overrides only when the repo is a monorepo. Handles package-manager (bun/npm/pnpm/yarn), orchestrator (turbo/nx/none), and test-framework (jest/vitest/bun:test/pytest/go test) differences. |
 | **post-impl-review** | Post-implementation review of changed code against a feature spec. Resolves the spec (by path, feature name, or auto-detect), diffs against the repo's default branch, and prints severity-graded findings (CRITICAL/HIGH/MEDIUM/LOW) with a compliance + drift verdict. |
+| **context-setup** | Author or improve `.nax/context.md` files — the human-authored source that `nax generate` converts into `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, and other agent files. Handles single-package and monorepo repos. In a monorepo, guides you to write a slim cross-cutting root context and specific per-package contexts under `.nax/mono/<pkg>/context.md`. |
 
 > **Scope:** This repo is the catch-all for nax operational skills. Spec authoring
 > and audit skills (spec-writing, post-impl-review) live in `nax-spec-kit`. Add new
