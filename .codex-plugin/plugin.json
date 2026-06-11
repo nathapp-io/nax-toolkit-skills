@@ -1,0 +1,39 @@
+{
+  "name": "nax-toolkit",
+  "version": "0.1.0",
+  "description": "A toolkit of operational skills for nax projects. Currently bundles nax-setup (wire .nax/config.json to a repo's real build/test/lint commands, single-package or monorepo).",
+  "author": {
+    "name": "William Khoo",
+    "email": "william_khoo@outlook.com"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/nathapp-io/nax-toolkit-skills",
+  "repository": "https://github.com/nathapp-io/nax-toolkit-skills",
+  "keywords": [
+    "skills",
+    "nax",
+    "setup",
+    "config",
+    "monorepo",
+    "toolkit"
+  ],
+  "skills": "../skills/",
+  "interface": {
+    "displayName": "nax-toolkit",
+    "shortDescription": "Operational skills for nax projects (setup, config wiring)",
+    "longDescription": "Use nax-toolkit to set up and operate nax in any repo. The nax-setup skill wires .nax/config.json (quality, review, context, precheck, execution) to a repo's real build/test/lint commands — single-package or workspace monorepo — handling package-manager, orchestrator, and test-framework differences.",
+    "developerName": "William Khoo",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Set up nax for this repo.",
+      "Configure nax for this project."
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}

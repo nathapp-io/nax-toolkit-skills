@@ -1,0 +1,17 @@
+{
+  "name": "nax-toolkit",
+  "version": "0.1.0",
+  "description": "A toolkit of operational skills for nax projects (currently nax-setup) for coding agents.",
+  "type": "module",
+  "main": ".opencode/plugins/nax-toolkit.js",
+  "homepage": "https://github.com/nathapp-io/nax-toolkit-skills",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nathapp-io/nax-toolkit-skills.git"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "William Khoo",
+    "email": "william_khoo@outlook.com"
+  }
+}
