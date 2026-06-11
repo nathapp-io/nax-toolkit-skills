@@ -46,7 +46,7 @@ A Go package in the same monorepo. No `<pm>`, no `typecheck` gate, `text`/`none`
     "commands": {
       "build": "go build ./...",
       "test": "go test ./...",
-      "testScoped": "go test {{files}}",
+      "testScoped": "go test ./...",
       "lint": "golangci-lint run",
       "lintFix": "golangci-lint run --fix",
       "formatFix": "gofmt -w ."

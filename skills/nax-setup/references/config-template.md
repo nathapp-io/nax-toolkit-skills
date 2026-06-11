@@ -107,7 +107,7 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
   "requireTypecheck": false, "requireLint": true, "requireTests": true,
   "commands": {
     "test": "cargo test", "testScoped": "cargo test",
-    "lint": "cargo clippy", "lintFix": "cargo clippy --fix --allow-dirty", "formatFix": "cargo fmt"
+    "lint": "cargo clippy", "lintFix": "cargo clippy --fix --allow-dirty --allow-staged", "formatFix": "cargo fmt"
   },
   "lintOutput": { "format": "text" }, "typecheckOutput": { "format": "none" }
 },

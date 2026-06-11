@@ -42,7 +42,7 @@ Then resolve the command *form* for that language. **Do not reach for a package 
 
 Find what actually exists: JS/TS → `package.json` `scripts`; Python → `pyproject.toml` `[tool.*]` / `Makefile`; Go → toolchain (+ `golangci-lint` config); Rust → cargo. Detect the **test framework** (drives `testFilePatterns`): jest/vitest/bun:test/pytest/go test/cargo test.
 
-nax's mechanical gates are **test, typecheck, lint, build**. Per the language matrix, some gates **do not exist** for a language (`typecheck` for Go/Rust; `build` for a source-run Python lib) — **turn those gates off rather than inventing a command**. Then pick a strategy and tell the user:
+nax's mechanical checks are **test, typecheck, lint** (quality gates, toggled by `requireTests`/`requireTypecheck`/`requireLint`) and **build** (a review check — there is no `requireBuild`; `build` lives in `review.checks` + `review.commands`, not as a quality flag). Per the language matrix, some checks **do not exist** for a language (`typecheck` for Go/Rust; `build` for a source-run Python lib) — **turn those off rather than inventing a command** (`requireTypecheck:false`; omit `build` from `review.checks`). Then pick a strategy and tell the user:
 
 - **Full parity (JS/TS)** — add the missing scripts, then point nax at them: `type-check` → `tsc --noEmit -p tsconfig.json`; `lint:fix` → existing lint + `--fix`. Monorepo: also add the matching orchestrator task + root passthrough script. (Go/Rust/Python: there are no scripts to add — the toolchain commands already exist.)
 - **Config-only (non-invasive)** — use only commands that already exist; turn off gates whose command is missing (`requireTypecheck:false`, drop `build` from `review.checks`, etc.).

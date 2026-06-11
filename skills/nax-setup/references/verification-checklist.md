@@ -73,7 +73,8 @@ No command may reference a script/binary/target that does not exist. **Also conf
 ```bash
 git status --short            # inspect index — there may be unrelated pre-staged work
 git reset -q                  # unstage everything, then stage ONLY nax files
-git add .nax/config.json .nax/mono/ turbo.json package.json packages/*/package.json   # adjust to what you actually changed
+git add .nax/config.json .nax/mono/ constitution.md context.md   # the nax files you wrote
+# JS/TS only, if you added parity scripts/tasks: also git add package.json turbo.json packages/*/package.json
 git diff --cached --stat      # confirm scope before committing
 ```
 

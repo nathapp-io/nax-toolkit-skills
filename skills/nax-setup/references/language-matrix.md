@@ -26,9 +26,9 @@ Fill `quality.commands.*` and `review.commands.*` from the row for the detected 
 |:--|:--|:--|:--|:--|:--|
 | `test` | `<pm> run test` | `<pm> run test` | `pytest` (or `<run> pytest`) | `go test ./...` | `cargo test` |
 | `build` | `<pm> run build` | `<pm> run build` *(if present)* | — *(usually none)* | `go build ./...` | `cargo build` |
-| `typecheck` | `tsc --noEmit -p tsconfig.json` | — *(usually none)* | `mypy src` *(only if mypy configured)* | — *(compiler typechecks; use `build`)* | — *(compiler typechecks; use `build`/`cargo check`)* |
+| `typecheck` | `tsc --noEmit -p tsconfig.json` | — *(usually none)* | `mypy <pkg-dir>` *(only if mypy configured; `mypy src` for src-layout, `mypy <package>` for flat-layout — point at the real source dir)* | — *(compiler typechecks; use `build`)* | — *(compiler typechecks; use `build`/`cargo check`)* |
 | `lint` | `<pm> run lint` (eslint/biome) | `<pm> run lint` | `ruff check` (or `<run> ruff check`) | `golangci-lint run` *(folds in `go vet`)* | `cargo clippy` |
-| `lintFix` | `<pm> run lint:fix` | `<pm> run lint:fix` | `ruff check --fix` | `golangci-lint run --fix` | `cargo clippy --fix` |
+| `lintFix` | `<pm> run lint:fix` | `<pm> run lint:fix` | `ruff check --fix` | `golangci-lint run --fix` | `cargo clippy --fix --allow-dirty --allow-staged` |
 | `formatFix` | `<pm> run format` / `lint:fix` | same | `ruff format` | `gofmt -w .` (or `goimports -w .`) | `cargo fmt` |
 
 ### `testScoped` — per-language scoped-run idiom
@@ -38,7 +38,7 @@ Fill `quality.commands.*` and `review.commands.*` from the row for the detected 
 | Language | `testScoped` | Token semantics |
 |:--|:--|:--|
 | TS/JS (turbo) | `<pm> run test -- --filter=[HEAD^1]` | turbo affected-graph; no `{{files}}` |
-| TS/JS (jest/vitest direct) | `<pm-dlx> jest {{files}} --passWithNoTests` / `vitest run {{files}}` | `{{files}}` = space-separated changed file paths |
+| TS/JS (jest/vitest direct) | `<pm-dlx> jest {{files}} --passWithNoTests` / `vitest run {{files}}` *(add `--config <path>` if the repo uses a non-default jest/vitest config)* | `{{files}}` = space-separated changed file paths |
 | Python (pytest) | `<run> pytest {{files}}` | `{{files}}` = changed paths; pytest accepts file paths and `::node` ids |
 | Go | `go test {{files}}` — or, if `{{files}}` resolves to packages, `go test ./...` | Go tests run per-**package**, not per-file; `go test <file>` needs all files in the package, so package-scoped (`./pkg/...`) is safer. When unsure, set it equal to `test`. |
 | Rust | `cargo test` (full) — or `cargo test --test {{files}}` for integration tests only | cargo has no per-file run; it scopes by test target/name, not path. Full-suite is the safe default. |
