@@ -11,6 +11,8 @@ Review changed code against a feature spec. Check compliance (every AC/story cov
 
 ## Step 1: Resolve the spec
 
+`args` is the text the user typed after `/spec-review` when invoking the skill. For example, `/spec-review graphify-kb` gives `args = "graphify-kb"`, and `/spec-review` alone gives `args = ""`.
+
 Parse the invocation argument `args`.
 
 **If `args` is an explicit path** (starts with `./`, `/`, or ends in `.md`):
@@ -57,6 +59,11 @@ Once resolved, print: `Spec: <resolved-path>`
 
 Read the spec file in full before continuing.
 
+If the spec file exists but is empty, print an error and stop:
+```
+Error: spec file is empty at <path>
+```
+
 ## Step 2: Detect base branch and get the diff
 
 **Detect base branch** — run in order, use the first that succeeds:
@@ -100,9 +107,15 @@ Exclude these files from analysis (do not pass them to the model):
 
 **Size guard:** After filtering, if the remaining diff has more than 500 changed files or more than 8000 lines, print a warning and proceed:
 ```
-Warning: large diff (N files, M lines). Review may miss fine-grained details.
+Warning: large diff (N files, M lines — exceeds size limit). Review may miss fine-grained details.
 Consider narrowing scope with /spec-review <feature-name>. Proceeding.
 ```
+
+**Empty diff guard:** After filtering, if no changed files remain, print and stop:
+```
+No changes detected relative to origin/<branch>. Nothing to review.
+```
+This can happen if the branch has no commits ahead of the base, or if all changes were in excluded files (lockfiles, build output).
 
 ## Step 4: Single-pass analysis
 
@@ -113,6 +126,10 @@ For each numbered or named AC, story, or requirement in the spec, determine:
 - **Covered** — the diff clearly addresses it
 - **Partial** — the diff touches it but leaves something incomplete
 - **Missing** — nothing in the diff implements it
+
+**If the spec has no numbered or named ACs** (it's written as prose): derive implicit requirements from the prose — treat each described behaviour, endpoint, or constraint as a requirement. Note in the findings header: `(Spec has no structured ACs — requirements inferred from prose)`.
+
+**Renames and deletions:** treat them as intentional changes when evaluating compliance. A diff showing `rename from A to B` or a deleted file counts as coverage for an AC that required moving or removing that module.
 
 **Drift — holistic across the diff:**
 Check whether the implementation matches the spec's described intent:
