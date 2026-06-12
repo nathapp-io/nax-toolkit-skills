@@ -1,6 +1,6 @@
 ---
 name: post-impl-review
-description: Post-implementation code review against a feature spec. Reads the spec (from .nax/features/<name>/spec.md, .nax/specs/*.md, or a user-provided path) and diffs changed code against the repo's default branch. Checks compliance (every AC/story covered?) and drift (does the implementation match the spec's approach, API shape, and constraints?). Prints severity-graded findings to the terminal with a single verdict. Use after completing a feature implementation to verify it matches the spec before merging.
+description: Post-implementation code review against a feature spec. Reads the spec (from .nax/features/<name>/spec.md, .nax/specs/*.md, or a user-provided path) and diffs changed code against the repo's default branch. Checks compliance (every AC/story covered?), drift (does the implementation match the spec's approach, API shape, and constraints?), and integration (does the changed code actually work against the unchanged collaborators it calls into?). Reads unchanged callees when the diff depends on them. Prints severity-graded findings to the terminal with a single verdict. Use after completing a feature implementation to verify it matches the spec before merging.
 ---
 
 # Spec Review
@@ -99,7 +99,9 @@ Example: `Base: origin/main (3 files changed, +412 −87)`
 
 ## Step 3: Filter noise from the diff
 
-Exclude these files from analysis (do not pass them to the model):
+This step only filters the **diff** down to meaningful changed lines. It does **not** restrict which files you may read: Step 4 requires opening unchanged collaborator files that the diff calls into. "Exclude" here means "don't treat these as reviewable changes," not "never open any file outside the diff."
+
+Exclude these files from the *changed-lines* analysis (do not treat their churn as a reviewable change):
 
 - Lockfiles: any file matching `bun.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, or ending in `.lock`
 - Generated output: files in `dist/`, `build/`, `.next/`, `.turbo/`, `__pycache__/`, or matching `*.generated.*`
@@ -117,9 +119,30 @@ No changes detected relative to origin/<branch>. Nothing to review.
 ```
 This can happen if the branch has no commits ahead of the base, or if all changes were in excluded files (lockfiles, build output).
 
-## Step 4: Single-pass analysis
+## Step 4: Map external touchpoints (read the unchanged collaborators)
 
-With the full spec content and the filtered diff in context, perform a single analysis pass covering both dimensions:
+**Do this before judging anything.** Most real defects in a focused diff live on the boundary between the changed code and the *unchanged* code it calls into — and that unchanged code is, by definition, not in the diff. A diff-only read cannot see them.
+
+From the filtered diff, build a list of **external touchpoints** — every symbol the changed code *uses* but does not *define* in the diff:
+
+- **Callees:** functions/methods the new lines call whose body lives in an unchanged file (e.g. `strategy_instance.get_references(...)`, `provider.cache.get_ohlcv(...)`).
+- **Polymorphic / interface calls:** any call dispatched through a base class, protocol, or registry. The diff sees one signature; the real behaviour is in *every concrete implementation*. Enumerate them.
+- **New or changed arguments to existing APIs:** a value the diff now passes that the callee didn't receive before — especially empty/sentinel/`None`/`{}`/`[]` values, or a newly-shaped object. Verify the callee tolerates it.
+- **Consumers of changed outputs:** unchanged code that reads a field, sentinel, or return value whose meaning the diff altered.
+- **Collaborators named in the spec:** if the spec asserts a cross-cutting goal ("every built-in strategy works", "all callers", "each adapter"), that goal is a claim *about unchanged code*. You must open those files to verify it — the diff alone can never prove it.
+
+For each touchpoint, **read the actual definition(s)** with Read/Grep and check the changed code's assumption holds for *all* of them, not just the convenient case. Use Grep to find every implementation of an overridden method before concluding it's safe.
+
+Examples of assumptions that only break in unchanged code:
+- The diff calls `iface.method(emptyValue)`; one concrete implementation immediately indexes a required key → runtime `KeyError`/`NullPointerException` for that case.
+- The diff sets a sentinel to `{}` instead of `None`; a downstream guard checks `is None`, so `{}` slips through and produces a misleading error or silent NaN.
+- The spec says "works for every strategy"; the diff only added tests for static/test-double strategies, leaving the dynamic real ones unverified.
+
+Treat an untested cross-cutting claim as **unverified, not satisfied** — surface it as a finding rather than assuming coverage.
+
+## Step 5: Analysis
+
+With the full spec content, the filtered diff, **and the collaborator code you read in Step 4** in context, perform the analysis covering three dimensions:
 
 **Compliance — per AC/story/requirement:**
 For each numbered or named AC, story, or requirement in the spec, determine:
@@ -138,16 +161,23 @@ Check whether the implementation matches the spec's described intent:
 - Constraints: are hard requirements respected (e.g. "must use HMAC-SHA256", "must be idempotent", "must validate at startup")?
 - Naming: do key identifiers (routes, types, env vars, functions) match the spec's terminology?
 
+**Integration — does the changed code actually work against the unchanged collaborators?** (uses the Step 4 touchpoints)
+For each external touchpoint, check whether the changed code's assumptions hold for *every* real implementation/consumer:
+- Will any concrete callee raise (KeyError, NPE, ValueError, panic) for an input the diff now passes — especially empty/sentinel/`None`/`[]`/`{}` values?
+- Does any sentinel or output the diff changed reach a downstream guard that interprets it the wrong way (`{}` slipping past an `is None` check; `[]` treated as "provided")?
+- Does the spec's cross-cutting claim ("every X works") actually hold for the real, non-test-double implementations — and is each one exercised by a test? An untested real path is a finding, not a pass.
+- Are there edge inputs the new tool/endpoint schema now permits (e.g. an explicitly empty array) that route into a broken branch?
+
 Classify each finding using this severity table:
 
 | Severity | Meaning |
 |:---------|:--------|
-| CRITICAL | AC entirely missing, or implementation directly contradicts a hard spec requirement |
-| HIGH | Significant drift — wrong API shape, missing constraint, wrong architectural approach |
-| MEDIUM | Partial coverage — AC present but incomplete; or minor drift that affects correctness |
+| CRITICAL | AC entirely missing; implementation directly contradicts a hard spec requirement; or the changed code raises/crashes at runtime for a case the spec requires to work |
+| HIGH | Significant drift (wrong API shape, missing constraint, wrong architectural approach); or an integration defect that breaks a real collaborator the spec depends on (e.g. a built-in implementation that hits a runtime error on the new call path) |
+| MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; or an integration gap reachable through a now-permitted input (e.g. empty-array regression) |
 | LOW | Minor naming deviation, style mismatch, or non-blocking gap |
 
-## Step 5: Print findings
+## Step 6: Print findings
 
 Print the full report to the terminal. Do not write any file.
 
@@ -166,6 +196,12 @@ FINDINGS
   Problem: Spec defines { data, error, meta } envelope; implementation returns raw objects
   Fix: Wrap responses with ApiResponse<T> in all controllers
 
+[HIGH] Integration: new call path breaks an unchanged collaborator
+  Problem: get_indicators() calls strategy_instance.get_references(pd.DataFrame());
+           Leadership.get_references() reads info["sector"] → KeyError on the empty frame.
+           Spec goal "every built-in strategy works" is unmet and untested (only test doubles covered).
+  Fix: Pass real company info (or guard empty frames) before calling get_references; add a test over the dynamic built-ins
+
 [MEDIUM] AC-7: Partial — refresh token logic incomplete
   Problem: JWT_REFRESH_EXPIRES_IN env var referenced but never validated at startup
   Fix: Add env validation in src/config/env.ts
@@ -175,7 +211,7 @@ FINDINGS
   Fix: Rename prefix in src/auth/auth.module.ts (or note intentional deviation)
 
 ────────────────────────────────────────
-VERDICT: 1 critical · 1 high · 1 medium · 1 low
+VERDICT: 1 critical · 2 high · 1 medium · 1 low
 Overall: FAILING
 ```
 
