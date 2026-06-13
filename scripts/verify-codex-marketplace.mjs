@@ -9,6 +9,11 @@ const pluginEntry = marketplace.plugins.find((plugin) => plugin.name === "nax-to
 
 assert(pluginEntry, "Expected nax-toolkit to be present in .agents/plugins/marketplace.json");
 assert.equal(pluginEntry.source?.source, "local", "Expected a local plugin source");
+assert.equal(
+  pluginEntry.source?.path,
+  "./plugins/nax-toolkit",
+  "Expected Codex marketplace source path to point at a plugin subdirectory",
+);
 
 const sourceRoot = path.resolve(repoRoot, pluginEntry.source.path);
 const manifestPath = path.join(sourceRoot, ".codex-plugin", "plugin.json");

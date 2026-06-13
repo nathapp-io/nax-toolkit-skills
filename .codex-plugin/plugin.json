@@ -1,6 +1,6 @@
 {
   "name": "nax-toolkit",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A toolkit of operational skills for nax projects. Currently bundles nax-setup (wire .nax/config.json to a repo's real build/test/lint commands, single-package or monorepo).",
   "author": {
     "name": "William Khoo",
