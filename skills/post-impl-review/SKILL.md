@@ -1,11 +1,11 @@
 ---
 name: post-impl-review
-description: Post-implementation code review against a feature spec. Reads the spec (from .nax/features/<name>/spec.md, .nax/specs/*.md, or a user-provided path) and diffs changed code against the repo's default branch. Checks compliance (every AC/story covered?), drift (does the implementation match the spec's approach, API shape, and constraints?), and integration (does the changed code actually work against the unchanged collaborators it calls into?). Reads unchanged callees when the diff depends on them. Prints severity-graded findings to the terminal with a single verdict. Use after completing a feature implementation to verify it matches the spec before merging.
+description: Post-implementation code review against a feature spec. Reads the spec (from .nax/features/<name>/spec.md, .nax/specs/*.md, or a user-provided path) and diffs changed code against the repo's default branch. Checks compliance (every AC/story covered, and is each covering test actually sound?), drift (does the implementation match the spec's approach, API shape, and constraints?), integration (does the changed code actually work against the unchanged collaborators it calls into?), and code quality (test isolation/teardown, leaked global state, dead/redundant code, resource leaks, obvious error-handling gaps) independent of the spec. Reads unchanged callees when the diff depends on them. Prints severity-graded findings to the terminal with a single verdict. Use after completing a feature implementation to verify it matches the spec before merging.
 ---
 
-# Spec Review
+# Post-Implementation Review
 
-Review changed code against a feature spec. Check compliance (every AC/story covered?) and drift (implementation deviates from spec approach, API shape, or constraints). Print severity-graded findings to the terminal with a unified verdict.
+Review changed code against a feature spec across four dimensions: compliance (every AC/story covered, and is each covering test actually sound?), drift (implementation deviates from spec approach, API shape, or constraints), integration (changed code works against the unchanged collaborators it calls into), and code quality (spec-independent defects in the changed lines — test isolation, dead code, resource leaks, error handling, security). Print severity-graded findings to the terminal with a unified verdict.
 
 **Announce at start:** "Using post-impl-review to review implementation against `<resolved-spec-path>`."
 
@@ -142,13 +142,15 @@ Treat an untested cross-cutting claim as **unverified, not satisfied** — surfa
 
 ## Step 5: Analysis
 
-With the full spec content, the filtered diff, **and the collaborator code you read in Step 4** in context, perform the analysis covering three dimensions:
+With the full spec content, the filtered diff, **and the collaborator code you read in Step 4** in context, perform the analysis covering four dimensions:
 
 **Compliance — per AC/story/requirement:**
 For each numbered or named AC, story, or requirement in the spec, determine:
 - **Covered** — the diff clearly addresses it
 - **Partial** — the diff touches it but leaves something incomplete
 - **Missing** — nothing in the diff implements it
+
+**Coverage ≠ correctness:** when an AC's coverage is a test, do not stop at "a test exists." Open the test body and verify it (a) restores any global / `os.environ` / filesystem / singleton state it mutates (teardown or fixture), (b) is deterministic and order-independent, and (c) asserts the AC's actual behaviour rather than a tautology. A test that passes only by accident of ordering, or that asserts nothing meaningful, is **Partial**, not Covered.
 
 **If the spec has no numbered or named ACs** (it's written as prose): derive implicit requirements from the prose — treat each described behaviour, endpoint, or constraint as a requirement. Note in the findings header: `(Spec has no structured ACs — requirements inferred from prose)`.
 
@@ -168,14 +170,26 @@ For each external touchpoint, check whether the changed code's assumptions hold 
 - Does the spec's cross-cutting claim ("every X works") actually hold for the real, non-test-double implementations — and is each one exercised by a test? An untested real path is a finding, not a pass.
 - Are there edge inputs the new tool/endpoint schema now permits (e.g. an explicitly empty array) that route into a broken branch?
 
+**Code Quality & Test Integrity — spec-independent defects in the changed lines:**
+Scan the diff (production **and** test code) for high-signal defects that are real regardless of what the spec says. Keep this bounded — report only concrete, objective issues, not style preferences:
+- **Test isolation:** mutating `os.environ` / globals / singletons / filesystem without teardown; cross-test ordering dependence; shared mutable fixtures. A test that only passes because another test happens to clean up after it is a defect even when the suite is currently green.
+- **Dead / redundant code:** assignments with no effect, unreachable branches, set-up the constructor already performed, unused locals introduced by the diff.
+- **Resource leaks:** opened files / sockets / handles / subprocesses not closed; timers / listeners not cleared.
+- **Error handling:** swallowed exceptions, bare catches that hide failures, missing validation on a newly-introduced input path.
+- **Security (only when the diff touches it):** hardcoded secrets, unvalidated user input reaching a sink, injection vectors.
+
+Do **not** report formatting, naming taste, or hypotheticals outside the changed lines. This dimension is for defects you can point at on a specific changed line, not aspirations.
+
+**No double-counting:** when a test-isolation defect also downgrades an AC to Partial under Compliance, report it **once** — a single finding that names the defect and notes the AC consequence (see the Step 6 example), not one finding per dimension.
+
 Classify each finding using this severity table:
 
 | Severity | Meaning |
 |:---------|:--------|
-| CRITICAL | AC entirely missing; implementation directly contradicts a hard spec requirement; or the changed code raises/crashes at runtime for a case the spec requires to work |
+| CRITICAL | AC entirely missing; implementation directly contradicts a hard spec requirement; the changed code raises/crashes at runtime for a case the spec requires to work; or a security defect the diff introduces (hardcoded secret, injection sink) |
 | HIGH | Significant drift (wrong API shape, missing constraint, wrong architectural approach); or an integration defect that breaks a real collaborator the spec depends on (e.g. a built-in implementation that hits a runtime error on the new call path) |
-| MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; or an integration gap reachable through a now-permitted input (e.g. empty-array regression) |
-| LOW | Minor naming deviation, style mismatch, or non-blocking gap |
+| MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; an integration gap reachable through a now-permitted input (e.g. empty-array regression); a test-isolation defect that can cause false positives or flakiness under reordering/parallelism; a resource leak; or a swallowed error on a real path |
+| LOW | Minor naming deviation, style mismatch, dead/redundant code, unused locals, or other non-blocking gap |
 
 ## Step 6: Print findings
 
@@ -206,12 +220,23 @@ FINDINGS
   Problem: JWT_REFRESH_EXPIRES_IN env var referenced but never validated at startup
   Fix: Add env validation in src/config/env.ts
 
+[MEDIUM] Test integrity: test leaks global state without teardown
+  Problem: test_ac4 sets os.environ[FMP_KEY] but never restores it; suite is green
+           only because test_ac5 happens to pop it later. Reordering or parallel
+           runs would give a false positive. AC-4 is therefore Partial, not Covered.
+  Fix: Use monkeypatch.setenv (auto-teardown) or pop the key in a try/finally
+
+[LOW] Dead code: redundant assignment in test helper
+  Problem: cfg.universe.screener_limit = 500 repeats a value already set when the
+           config was constructed; the assignment has no effect.
+  Fix: Remove the redundant line
+
 [LOW] Naming: route prefix uses /auth instead of /authentication as spec describes
   Problem: Spec says "mount under /authentication"; implementation uses /auth
   Fix: Rename prefix in src/auth/auth.module.ts (or note intentional deviation)
 
 ────────────────────────────────────────
-VERDICT: 1 critical · 2 high · 1 medium · 1 low
+VERDICT: 1 critical · 2 high · 2 medium · 2 low
 Overall: FAILING
 ```
 
