@@ -1,11 +1,11 @@
 ---
 name: post-impl-review
-description: Post-implementation code review against a feature spec. Reads the spec (from .nax/features/<name>/spec.md, .nax/specs/*.md, or a user-provided path) and diffs changed code against the repo's default branch. Checks compliance (every AC/story covered?), drift (does the implementation match the spec's approach, API shape, and constraints?), and integration (does the changed code actually work against the unchanged collaborators it calls into?). Reads unchanged callees when the diff depends on them. Prints severity-graded findings to the terminal with a single verdict. Use after completing a feature implementation to verify it matches the spec before merging.
+description: Post-implementation code review against a feature spec. Reads the spec (from .nax/features/<name>/spec.md, .nax/specs/*.md, or a user-provided path) and diffs changed code against the repo's default branch. Checks compliance (every AC/story covered, and is each covering test actually sound?), drift (does the implementation match the spec's approach, API shape, and constraints?), integration (does the changed code actually work against the unchanged collaborators it calls into?), convention compliance (does the diff obey the project's own CLAUDE.md / .nax/rules / .claude/rules?), and code quality (test isolation, dead/redundant code, resource leaks, error handling, concurrency, performance, accessibility, security) independent of the spec. Reads unchanged callees when the diff depends on them, and loads project rule files when present. Applies an 80% confidence threshold to keep findings high-signal. Prints severity-graded findings to the terminal with a single verdict. Use after completing a feature implementation to verify it matches the spec before merging.
 ---
 
-# Spec Review
+# Post-Implementation Review
 
-Review changed code against a feature spec. Check compliance (every AC/story covered?) and drift (implementation deviates from spec approach, API shape, or constraints). Print severity-graded findings to the terminal with a unified verdict.
+Review changed code against a feature spec across five dimensions: compliance (every AC/story covered, and is each covering test actually sound?), drift (implementation deviates from spec approach, API shape, or constraints), integration (changed code works against the unchanged collaborators it calls into), convention compliance (changed code obeys the project's own rule files), and code quality (spec-independent defects in the changed lines — test isolation, dead code, resource leaks, error handling, concurrency, performance, accessibility, security). Report only findings you are ≥80% confident are real. Print severity-graded findings to the terminal with a unified verdict.
 
 **Announce at start:** "Using post-impl-review to review implementation against `<resolved-spec-path>`."
 
@@ -119,7 +119,22 @@ No changes detected relative to origin/<branch>. Nothing to review.
 ```
 This can happen if the branch has no commits ahead of the base, or if all changes were in excluded files (lockfiles, build output).
 
-## Step 4: Map external touchpoints (read the unchanged collaborators)
+## Step 4: Gather context beyond the diff (collaborators + project conventions)
+
+### 4a. Load project conventions
+
+Before judging style or structure, load the repo's own rules so convention findings are grounded in *this project's* stated standards, not generic preference. Read whichever of these exist (they may all be absent — that's fine, just skip the Convention dimension):
+
+```bash
+ls CLAUDE.md AGENTS.md 2>/dev/null
+find .nax/rules .claude/rules -name "*.md" 2>/dev/null
+```
+
+Read every file found. `.nax/rules/` takes priority over `.claude/rules/` when they conflict (nax-native is canonical). Honour each rule file's `paths:` / `appliesTo:` frontmatter if present — a rule scoped to `src/agents/**` does not apply to a diff under `apps/web/`. Extract the concrete, checkable directives (forbidden APIs, required patterns, naming, logging fields, file-size limits) and hold them for the Convention Compliance dimension in Step 5.
+
+If no rule files exist, note `(No project rule files found — Convention Compliance skipped)` in the findings header and omit that dimension.
+
+### 4b. Map external touchpoints (read the unchanged collaborators)
 
 **Do this before judging anything.** Most real defects in a focused diff live on the boundary between the changed code and the *unchanged* code it calls into — and that unchanged code is, by definition, not in the diff. A diff-only read cannot see them.
 
@@ -142,13 +157,15 @@ Treat an untested cross-cutting claim as **unverified, not satisfied** — surfa
 
 ## Step 5: Analysis
 
-With the full spec content, the filtered diff, **and the collaborator code you read in Step 4** in context, perform the analysis covering three dimensions:
+With the full spec content, the filtered diff, **the collaborator code you read in Step 4b, and the project rules you loaded in Step 4a** in context, perform the analysis covering five dimensions:
 
 **Compliance — per AC/story/requirement:**
 For each numbered or named AC, story, or requirement in the spec, determine:
 - **Covered** — the diff clearly addresses it
 - **Partial** — the diff touches it but leaves something incomplete
 - **Missing** — nothing in the diff implements it
+
+**Coverage ≠ correctness:** when an AC's coverage is a test, do not stop at "a test exists." Open the test body and verify it (a) restores any global / `os.environ` / filesystem / singleton state it mutates (teardown or fixture), (b) is deterministic and order-independent, and (c) asserts the AC's actual behaviour rather than a tautology. A test that passes only by accident of ordering, or that asserts nothing meaningful, is **Partial**, not Covered.
 
 **If the spec has no numbered or named ACs** (it's written as prose): derive implicit requirements from the prose — treat each described behaviour, endpoint, or constraint as a requirement. Note in the findings header: `(Spec has no structured ACs — requirements inferred from prose)`.
 
@@ -161,21 +178,46 @@ Check whether the implementation matches the spec's described intent:
 - Constraints: are hard requirements respected (e.g. "must use HMAC-SHA256", "must be idempotent", "must validate at startup")?
 - Naming: do key identifiers (routes, types, env vars, functions) match the spec's terminology?
 
-**Integration — does the changed code actually work against the unchanged collaborators?** (uses the Step 4 touchpoints)
+**Integration — does the changed code actually work against the unchanged collaborators?** (uses the Step 4b touchpoints)
 For each external touchpoint, check whether the changed code's assumptions hold for *every* real implementation/consumer:
 - Will any concrete callee raise (KeyError, NPE, ValueError, panic) for an input the diff now passes — especially empty/sentinel/`None`/`[]`/`{}` values?
 - Does any sentinel or output the diff changed reach a downstream guard that interprets it the wrong way (`{}` slipping past an `is None` check; `[]` treated as "provided")?
 - Does the spec's cross-cutting claim ("every X works") actually hold for the real, non-test-double implementations — and is each one exercised by a test? An untested real path is a finding, not a pass.
 - Are there edge inputs the new tool/endpoint schema now permits (e.g. an explicitly empty array) that route into a broken branch?
 
+**Convention Compliance — does the diff obey the project's own rules?** (uses the rules loaded in Step 4a)
+For each concrete directive you extracted, check whether the changed lines violate it. Only flag rules that actually apply to the changed files (respect `paths:` / `appliesTo:` scoping). Examples of the *kind* of directive to check — the real list comes from the loaded files, not this list:
+- Forbidden APIs / patterns (e.g. a banned import, `console.log` in source, a Node API in a Bun-native repo, hardcoded patterns the project routes through a resolver).
+- Required structure (barrel imports vs internal paths, file-size limits, mandated error/base classes, dependency-injection patterns).
+- Required fields / format (e.g. a mandated structured-log field, conventional-commit style, naming conventions for routes/types/env vars).
+
+Cite the specific rule file and directive in the finding (`forbidden-patterns.md: no console.log in src/`). A violation of an explicit, in-scope project rule is a real finding; a generic style opinion **not** backed by a loaded rule is not — do not invent rules. If Step 4a found no rule files, skip this dimension entirely.
+
+**Code Quality & Test Integrity — spec-independent defects in the changed lines:**
+Scan the diff (production **and** test code) for high-signal defects that are real regardless of what the spec says. Keep this bounded — report only concrete, objective issues, not style preferences:
+- **Test isolation:** mutating `os.environ` / globals / singletons / filesystem without teardown; cross-test ordering dependence; shared mutable fixtures. A test that only passes because another test happens to clean up after it is a defect even when the suite is currently green.
+- **Dead / redundant code:** assignments with no effect, unreachable branches, set-up the constructor already performed, unused locals introduced by the diff; logic duplicated from an existing helper the diff could have reused.
+- **Resource leaks:** opened files / sockets / handles / subprocesses not closed; timers / listeners not cleared.
+- **Error handling:** swallowed exceptions, bare catches that hide failures, missing validation on a newly-introduced input path.
+- **Concurrency:** shared state mutated without synchronisation; `await` inside a loop that should be batched; a race between a check and the action it guards.
+- **Performance:** N+1 queries or network calls in a loop; blocking I/O on a hot path; an obviously quadratic scan over a large collection the diff introduces.
+- **Accessibility (UI diffs only):** interactive elements without an accessible name/label, missing `alt`, non-keyboard-reachable controls, form inputs with no associated label.
+- **Security (only when the diff touches it):** hardcoded secrets, unvalidated user input reaching a sink, injection vectors.
+
+Do **not** report formatting, naming taste, or hypotheticals outside the changed lines. This dimension is for defects you can point at on a specific changed line, not aspirations.
+
+**No double-counting:** when a test-isolation defect also downgrades an AC to Partial under Compliance, report it **once** — a single finding that names the defect and notes the AC consequence (see the Step 6 example), not one finding per dimension.
+
+**Confidence threshold (precision over volume):** before reporting any finding, ask how confident you are that it is a *real* issue someone will actually hit — not a maybe, not a stylistic preference, not a pre-existing issue the diff didn't introduce. **Only report findings you are ≥80% confident are real.** A missing AC, a runtime crash you traced through the collaborator, and an in-scope project-rule violation clear this bar easily. A "this might be slow" hunch you haven't reasoned through does not — drop it. Prefer five solid findings over twenty speculative ones; a noisy report gets ignored.
+
 Classify each finding using this severity table:
 
 | Severity | Meaning |
 |:---------|:--------|
-| CRITICAL | AC entirely missing; implementation directly contradicts a hard spec requirement; or the changed code raises/crashes at runtime for a case the spec requires to work |
-| HIGH | Significant drift (wrong API shape, missing constraint, wrong architectural approach); or an integration defect that breaks a real collaborator the spec depends on (e.g. a built-in implementation that hits a runtime error on the new call path) |
-| MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; or an integration gap reachable through a now-permitted input (e.g. empty-array regression) |
-| LOW | Minor naming deviation, style mismatch, or non-blocking gap |
+| CRITICAL | AC entirely missing; implementation directly contradicts a hard spec requirement; the changed code raises/crashes at runtime for a case the spec requires to work; or a security defect the diff introduces (hardcoded secret, injection sink) |
+| HIGH | Significant drift (wrong API shape, missing constraint, wrong architectural approach); an integration defect that breaks a real collaborator the spec depends on (e.g. a built-in implementation that hits a runtime error on the new call path); or a violation of a project rule explicitly marked as required/forbidden (a banned API, a hard-blocked pattern) |
+| MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; an integration gap reachable through a now-permitted input (e.g. empty-array regression); a test-isolation defect that can cause false positives or flakiness under reordering/parallelism; a resource leak; a swallowed error on a real path; a concurrency/race or performance regression the diff introduces; or an accessibility defect on a new interactive UI element |
+| LOW | Minor naming deviation, style mismatch, dead/redundant/duplicated code, unused locals, a soft convention deviation, or other non-blocking gap |
 
 ## Step 6: Print findings
 
@@ -202,16 +244,32 @@ FINDINGS
            Spec goal "every built-in strategy works" is unmet and untested (only test doubles covered).
   Fix: Pass real company info (or guard empty frames) before calling get_references; add a test over the dynamic built-ins
 
+[HIGH] Convention: banned API used in source
+  Problem: src/auth/session.ts uses console.error for failure logging.
+           forbidden-patterns.md: "no console.log/console.error in src/ — use the project logger".
+  Fix: Replace with logger.error("auth", ...) from src/logger
+
 [MEDIUM] AC-7: Partial — refresh token logic incomplete
   Problem: JWT_REFRESH_EXPIRES_IN env var referenced but never validated at startup
   Fix: Add env validation in src/config/env.ts
+
+[MEDIUM] Test integrity: test leaks global state without teardown
+  Problem: test_ac4 sets os.environ[FMP_KEY] but never restores it; suite is green
+           only because test_ac5 happens to pop it later. Reordering or parallel
+           runs would give a false positive. AC-4 is therefore Partial, not Covered.
+  Fix: Use monkeypatch.setenv (auto-teardown) or pop the key in a try/finally
+
+[LOW] Dead code: redundant assignment in test helper
+  Problem: cfg.universe.screener_limit = 500 repeats a value already set when the
+           config was constructed; the assignment has no effect.
+  Fix: Remove the redundant line
 
 [LOW] Naming: route prefix uses /auth instead of /authentication as spec describes
   Problem: Spec says "mount under /authentication"; implementation uses /auth
   Fix: Rename prefix in src/auth/auth.module.ts (or note intentional deviation)
 
 ────────────────────────────────────────
-VERDICT: 1 critical · 2 high · 1 medium · 1 low
+VERDICT: 1 critical · 3 high · 2 medium · 2 low
 Overall: FAILING
 ```
 
