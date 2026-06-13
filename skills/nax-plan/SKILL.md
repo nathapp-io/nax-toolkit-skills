@@ -58,6 +58,20 @@ The user may also pass an explicit spec path as a second argument (e.g. `/nax-pl
 
 ## Step 3: Run `nax plan`
 
+> **`nax plan` is a long-running task.** It invokes an LLM to analyze the spec
+> and generate the PRD, and can take several minutes (longer for large specs or
+> when a profile triggers extra review passes). **Run it as a background task**
+> so the session stays responsive and is not blocked waiting on completion.
+
+**Tell the user up front**, e.g.:
+
+```
+Planning `<feature-name>` — this is a long-running task (typically a few
+minutes). Running it in the background; I'll report when the PRD is ready.
+```
+
+**Run in the background** (set `run_in_background: true` on the Bash tool):
+
 ```bash
 nax plan -f <feature-name> --from <resolved-spec-path>
 ```
@@ -74,4 +88,16 @@ Use `--profile` when the user specifies a profile by name. To see available prof
 nax config profile list
 ```
 
-The PRD is written to `.nax/features/<feature-name>/prd.json` on success.
+### While it runs
+
+- The background command keeps running across turns; you are re-invoked when it
+  exits, so there is no need to poll in a tight loop. If you do check progress,
+  read the task output rather than re-running the command.
+- Do not start a second `nax plan` for the same feature while one is in flight.
+
+### On completion
+
+- The PRD is written to `.nax/features/<feature-name>/prd.json` on success.
+- Confirm the file exists and report the path to the user.
+- If the command exited non-zero, surface the error output and stop — do not
+  claim success without verifying `prd.json` was written.
