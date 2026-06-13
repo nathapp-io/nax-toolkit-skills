@@ -43,20 +43,96 @@ Restart or `/clear` the session after installing so the skills are discovered.
 
 ### Codex CLI
 
-This repo is also a Codex marketplace. Add it, then install:
+The repo is published as a Codex plugin marketplace at
+[github.com/nathapp-io/nax-toolkit-skills](https://github.com/nathapp-io/nax-toolkit-skills).
+The catalog lives at `.agents/plugins/marketplace.json`; the installable plugin
+lives at `plugins/nax-toolkit/`.
+
+**Prerequisites**
+
+- Codex CLI installed (`codex --version`)
+- Authenticated with OpenAI (`codex auth` / sign-in flow)
+- The repo is public on GitHub (or you have access to a local clone)
+
+**Install from GitHub (recommended)**
 
 ```bash
-# From a local clone:
-codex plugin marketplace add /path/to/nax-toolkit-skills
-codex plugin add nax-toolkit@nax-toolkit
-
-# Or, once pushed to GitHub:
+# Register the marketplace source
 codex plugin marketplace add nathapp-io/nax-toolkit-skills
+
+# Install the plugin
 codex plugin add nax-toolkit@nax-toolkit
 ```
 
-The marketplace entry lives at `.agents/plugins/marketplace.json`, and the
-installable Codex plugin lives at `plugins/nax-toolkit/`.
+Then in the Codex app or CLI, open the **Plugins** directory, find **nax-toolkit**
+under the **nax-toolkit** marketplace, and enable it.
+
+**Install from a local clone** (useful for testing before pushing a release)
+
+```bash
+# From a checkout of this repo:
+codex plugin marketplace add /absolute/path/to/nax-toolkit
+codex plugin add nax-toolkit@nax-toolkit
+```
+
+**Verify the install**
+
+```bash
+codex plugin marketplace list        # confirm the marketplace is registered
+```
+
+In the Codex CLI, run `/plugins` to browse; **nax-toolkit** should appear under
+the registered marketplace tab. If it doesn't, restart Codex (close and reopen
+the thread) so it re-reads the marketplace.
+
+**Pin a ref** (optional, for reproducible installs)
+
+```bash
+codex plugin marketplace add nathapp-io/nax-toolkit-skills --ref main
+# or a tag/commit:
+codex plugin marketplace add nathapp-io/nax-toolkit-skills@v0.1.3
+```
+
+**Use it**
+
+In a Codex thread, invoke the plugin explicitly with `@`:
+
+```
+@nax-toolkit set up nax for this repo
+```
+
+Or just describe the task in natural language and let Codex pick the installed
+plugin. Bundled skills (`nax-setup`, `post-impl-review`, `context-setup`,
+`rules-setup`, `nax-plan`, `nax-diagnose`) auto-activate on their trigger
+phrases.
+
+**Manage the marketplace**
+
+```bash
+codex plugin marketplace list                            # show registered marketplaces
+codex plugin marketplace upgrade                          # upgrade all
+codex plugin marketplace upgrade nax-toolkit             # upgrade one
+codex plugin marketplace remove nax-toolkit               # unregister
+```
+
+**Disable / re-enable a plugin** without uninstalling, edit `~/.codex/config.toml`:
+
+```toml
+[plugins."nax-toolkit@nax-toolkit"]
+enabled = false
+```
+
+**Troubleshooting**
+
+- **Plugin doesn't appear in `/plugins`** — restart Codex (clear / new thread) so
+  the marketplace is re-read. Confirm the repo is reachable
+  (`curl -I https://raw.githubusercontent.com/nathapp-io/nax-toolkit-skills/main/.agents/plugins/marketplace.json`).
+- **Marketplace loads but the plugin entry is skipped** — Codex logs the failed
+  source resolution. Most often a `source.path` that escapes the marketplace
+  root (every path must start with `./` and stay inside the marketplace root).
+- **Skill changes don't take effect** — plugin changes require either a
+  `codex plugin marketplace upgrade nax-toolkit` (for GitHub installs) or a
+  Codex restart (for local-clone installs).
 
 ### Cursor
 
@@ -90,8 +166,6 @@ You can also just say "set up nax for this repo" or "configure nax for this proj
 .claude-plugin/
   plugin.json        # Claude Code plugin manifest
   marketplace.json   # self-hosted marketplace entry
-.codex-plugin/
-  plugin.json        # Root Codex manifest (skills → ../skills/)
 .agents/plugins/
   marketplace.json   # Codex marketplace entry for this repo
 plugins/nax-toolkit/
@@ -113,7 +187,7 @@ skills/
 
 1. Create `skills/<skill-name>/SKILL.md` with name + description frontmatter.
 2. Add any supporting material under `skills/<skill-name>/` (references, examples).
-3. Bump the version in the four manifests + `package.json`.
+3. Bump the version in the three manifests + `package.json` (Claude, Cursor, Codex).
 4. Add a row to the skills table above.
 
 No manifest wiring is needed per-skill — every harness manifest points at the
