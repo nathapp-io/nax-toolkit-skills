@@ -46,7 +46,7 @@ Restart or `/clear` the session after installing so the skills are discovered.
 The repo is published as a Codex plugin marketplace at
 [github.com/nathapp-io/nax-toolkit-skills](https://github.com/nathapp-io/nax-toolkit-skills).
 The catalog lives at `.agents/plugins/marketplace.json`; the installable plugin
-lives at `plugins/nax-toolkit/`.
+lives at the repo root via `.codex-plugin/plugin.json`.
 
 **Prerequisites**
 
@@ -90,7 +90,7 @@ the thread) so it re-reads the marketplace.
 ```bash
 codex plugin marketplace add nathapp-io/nax-toolkit-skills --ref main
 # or a tag/commit:
-codex plugin marketplace add nathapp-io/nax-toolkit-skills@v0.1.3
+codex plugin marketplace add nathapp-io/nax-toolkit-skills@v0.1.4
 ```
 
 **Use it**
@@ -130,6 +130,9 @@ enabled = false
 - **Marketplace loads but the plugin entry is skipped** — Codex logs the failed
   source resolution. Most often a `source.path` that escapes the marketplace
   root (every path must start with `./` and stay inside the marketplace root).
+- **Plugin installs but no skills appear** — the installed payload must contain a
+  real `skills/` directory inside the plugin source root. A symlink that points
+  outside the install root can install cleanly but still prevent discovery.
 - **Skill changes don't take effect** — plugin changes require either a
   `codex plugin marketplace upgrade nax-toolkit` (for GitHub installs) or a
   Codex restart (for local-clone installs).
@@ -166,11 +169,10 @@ You can also just say "set up nax for this repo" or "configure nax for this proj
 .claude-plugin/
   plugin.json        # Claude Code plugin manifest
   marketplace.json   # self-hosted marketplace entry
+.codex-plugin/
+  plugin.json        # Codex plugin manifest (repo-root install payload)
 .agents/plugins/
   marketplace.json   # Codex marketplace entry for this repo
-plugins/nax-toolkit/
-  .codex-plugin/plugin.json   # Marketplace-installed Codex plugin
-  skills -> ../../skills      # Reuses the shared skills tree
 .cursor-plugin/
   plugin.json        # Cursor manifest (skills → ../skills/)
 .opencode/

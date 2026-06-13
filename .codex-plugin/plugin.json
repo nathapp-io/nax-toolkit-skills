@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "nax-toolkit",
     "shortDescription": "Operational skills for nax projects (setup, config wiring)",
-    "longDescription": "Use nax-toolkit to set up and operate nax in any repo. The nax-setup skill wires .nax/config.json (quality, review, context, precheck, execution) to a repo's real build/test/lint commands \u2014 single-package or workspace monorepo \u2014 handling package-manager, orchestrator, and test-framework differences.",
+    "longDescription": "Use nax-toolkit to set up and operate nax in any repo. The nax-setup skill wires .nax/config.json (quality, review, context, precheck, execution) to a repo's real build/test/lint commands — single-package or workspace monorepo — handling package-manager, orchestrator, and test-framework differences.",
     "developerName": "William Khoo",
     "category": "Coding",
     "capabilities": [
