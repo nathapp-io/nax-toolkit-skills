@@ -137,6 +137,17 @@ enabled = false
   `codex plugin marketplace upgrade nax-toolkit` (for GitHub installs) or a
   Codex restart (for local-clone installs).
 
+**Maintaining the Codex skill payload**
+
+Edit only the canonical root `skills/` tree. The marketplace payload under
+`plugins/nax-toolkit/skills/` is generated release content for Codex.
+
+```bash
+npm run sync:codex-skills      # rebuild packaged Codex skills from skills/
+npm run verify:codex-skills    # fail if packaged skills drift from skills/
+npm run prepare:codex-release  # sync + verify + marketplace verification
+```
+
 ### Cursor
 
 Manifest at `.cursor-plugin/plugin.json`. Install via Cursor's plugin manager
@@ -194,6 +205,7 @@ skills/
 2. Add any supporting material under `skills/<skill-name>/` (references, examples).
 3. Bump the version in the three manifests + `package.json` (Claude, Cursor, Codex).
 4. Add a row to the skills table above.
+5. Run `npm run prepare:codex-release` before publishing a Codex marketplace update.
 
 No manifest wiring is needed per-skill — every harness manifest points at the
 whole `skills/` directory.

@@ -5,7 +5,10 @@
   "type": "module",
   "main": ".opencode/plugins/nax-toolkit.js",
   "scripts": {
-    "test:codex-marketplace": "node scripts/verify-codex-marketplace.mjs"
+    "sync:codex-skills": "node scripts/sync-codex-plugin-skills.mjs",
+    "verify:codex-skills": "node scripts/verify-codex-plugin-skills.mjs",
+    "test:codex-marketplace": "node scripts/verify-codex-marketplace.mjs",
+    "prepare:codex-release": "npm run sync:codex-skills && npm run verify:codex-skills && npm run test:codex-marketplace"
   },
   "homepage": "https://github.com/nathapp-io/nax-toolkit-skills",
   "repository": {
