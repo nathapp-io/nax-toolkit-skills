@@ -11,6 +11,7 @@ for nax-related skills that are *not* part of the spec workflow (which lives in
 | **context-setup** | Author or improve `.nax/context.md` files — the human-authored source that `nax generate` converts into `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, and other agent files. Handles single-package and monorepo repos. In a monorepo, guides you to write a slim cross-cutting root context and specific per-package contexts under `.nax/mono/<pkg>/context.md`. |
 | **rules-setup** | Author or improve `.nax/rules/*.md` files — the agent-neutral canonical store for project conventions. Covers frontmatter (`priority`, `paths`, `appliesTo`), content quality and neutrality requirements, single-package and monorepo layouts, and validation with `nax rules lint`. Replaces per-agent files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) as the single source of truth. |
 | **nax-plan** | Run `nax plan` to generate a PRD (`prd.json`) from a feature spec. Covers spec resolution, plan modes (`single`/`debate`/`pipeline`/`refine`), the `--profile` flag for per-run config overrides, key config knobs (model tier, timeout, debate agents, TDD strategy), and reading and validating the PRD output. |
+| **nax-finish** | Finalize a completed feature through to an opened MR/PR. Reads the nax config (root + per-package `quality.commands` / `acceptance`), runs **post-impl-review** and triages findings with the user, fixes approved findings, drives the changed feature's acceptance tests to green (feature-scoped), runs the repo-root quality gates to green (single-package or monorepo), then — only on explicit approval — detects GitHub/GitLab, fills any PR/MR template, summarizes the spec as the body, and opens it with `gh`/`glab`. |
 
 > **Scope:** This repo is the catch-all for nax operational skills. Spec authoring
 > and audit skills (spec-writing, post-impl-review) live in `nax-spec-kit`. Add new
@@ -90,7 +91,7 @@ the thread) so it re-reads the marketplace.
 ```bash
 codex plugin marketplace add nathapp-io/nax-toolkit-skills --ref main
 # or a tag/commit:
-codex plugin marketplace add nathapp-io/nax-toolkit-skills@v0.1.5
+codex plugin marketplace add nathapp-io/nax-toolkit-skills@v0.2.0
 ```
 
 **Use it**
@@ -103,8 +104,8 @@ In a Codex thread, invoke the plugin explicitly with `@`:
 
 Or just describe the task in natural language and let Codex pick the installed
 plugin. Bundled skills (`nax-setup`, `post-impl-review`, `context-setup`,
-`rules-setup`, `nax-plan`, `nax-diagnose`) auto-activate on their trigger
-phrases.
+`rules-setup`, `nax-plan`, `nax-finish`, `nax-diagnose`) auto-activate on their
+trigger phrases.
 
 **Manage the marketplace**
 
