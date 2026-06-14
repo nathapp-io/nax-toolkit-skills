@@ -91,7 +91,7 @@ the thread) so it re-reads the marketplace.
 ```bash
 codex plugin marketplace add nathapp-io/nax-toolkit-skills --ref main
 # or a tag/commit:
-codex plugin marketplace add nathapp-io/nax-toolkit-skills@v0.2.0
+codex plugin marketplace add nathapp-io/nax-toolkit-skills@v0.2.1
 ```
 
 **Use it**
