@@ -83,12 +83,16 @@ Extract:
 - `quality.commands` → `build`, `typecheck`, `lint`, `test` (the **unscoped** variants — Step 6 runs the whole repo, not a scoped subset). Also note `quality.requireTypecheck` / `requireLint` / `requireTests` (default `true`) — a gate whose `require*` flag is `false` or whose command is unset is **skipped**, not failed.
 - `acceptance.enabled` (default `true`), `acceptance.command` (optional explicit runner, may contain a `{{FILE}}` placeholder), `acceptance.testPath` (default filename, e.g. `.nax-acceptance.test.ts`).
 - `project.language` if present (drives the acceptance test-file extension).
+- `project.type` if present — `"monorepo"` is the **authoritative** monorepo signal; trust it over any directory probe.
 
-**Detect monorepo:**
+**Detect monorepo:** treat the repo as a monorepo if **either** `project.type === "monorepo"` **or** any per-package config exists. Per-package configs mirror the workspace tree and can be nested arbitrarily deep (`.nax/mono/packages/core/config.json`, `.nax/mono/apps/api/config.json`), so use a recursive `find`, **not** a fixed-depth glob:
 ```bash
-ls .nax/mono/*/config.json 2>/dev/null
+# ✅ recursive — matches nested .nax/mono/<group>/<pkg>/config.json
+find .nax/mono -name config.json 2>/dev/null
+# ❌ WRONG — `ls .nax/mono/*/config.json` only sees one level and silently
+#    misses .nax/mono/packages/* and .nax/mono/apps/*, mis-detecting single-package
 ```
-If any exist, this is a workspace monorepo. For **acceptance** (Step 3) a package's `.nax/mono/<pkg>/config.json` may override `acceptance.testPath`/`command` — honour the per-package value for that package. For **repo-root quality** (Step 6) you still run the **root** `quality.commands` only; in a well-configured monorepo those delegate to the orchestrator (turbo/nx/workspace script) and cover every package. Do **not** loop over per-package quality commands here — the user asked specifically for the repo-root gates.
+Each match's directory (relative to `.nax/mono/`) is a `packageDir` — e.g. `.nax/mono/packages/core/config.json` → `packageDir = packages/core`. For **acceptance** (Step 3) a package's config may override `acceptance.testPath`/`command` — honour the per-package value for that package. For **repo-root quality** (Step 6) you still run the **root** `quality.commands` only; in a well-configured monorepo those delegate to the orchestrator (turbo/nx/workspace script) and cover every package. Do **not** loop over per-package quality commands here — the user asked specifically for the repo-root gates.
 
 Print a one-line config summary so the user can sanity-check it, e.g.:
 ```
@@ -96,7 +100,7 @@ Config: single-package · quality: build,typecheck,lint,test · acceptance: enab
 ```
 or
 ```
-Config: monorepo (3 pkgs) · root quality: typecheck,lint,test (build unset) · acceptance: enabled
+Config: monorepo (6 pkgs, project.type=monorepo) · root quality: typecheck,lint,test,format (build unset) · acceptance: enabled
 ```
 If a gate the user expects is missing (e.g. no `test` command at all), say so plainly — don't silently skip it.
 
@@ -109,8 +113,13 @@ If `acceptance.enabled` is `false`, print `Acceptance disabled in config — ski
 **Scope to the feature being finished — not the whole acceptance suite.** Resolve the feature's acceptance test file(s):
 
 - Single-package: `.nax/features/<featureName>/<acceptance.testPath>` — the nax convention places the generated acceptance test inside the feature directory, with the extension matching `project.language` (e.g. `.nax-acceptance.test.ts` for TS, `…test.py` for Python).
-- Monorepo: the feature's stories may span packages. Resolve the test file per package, honouring each package's `.nax/mono/<pkg>/config.json` `acceptance.testPath`. Run each.
-- If you cannot locate an acceptance test file for the feature, list where you looked and ask the user for the path (or whether acceptance was generated at all) — do not silently skip.
+- Monorepo: the feature's stories may span **multiple packages**, and nax writes a **per-package feature directory** — the acceptance test lives at `<packageDir>/.nax/features/<featureName>/<acceptance.testPath>`, **not** in the root `.nax/features/<featureName>/` (the root dir holds only `spec.md` / `prd.json` / `acceptance-*.json` — no test file). The same feature name therefore appears under each package that contributes to it. **Discover every package the feature touches** with a recursive search rather than guessing — don't assume it lives in one place:
+  ```bash
+  # Find every per-package acceptance test for this feature (testPath from config; default _nax_acceptance_test.py / .nax-acceptance.test.ts)
+  find . -path "*/.nax/features/<featureName>/<acceptance.testPath>" -not -path '*/node_modules/*' 2>/dev/null
+  ```
+  Run **each** match, honouring that package's `.nax/mono/<packageDir>/config.json` `acceptance.command`/`testPath` override. A feature spanning `packages/core`, `packages/backtester`, and `apps/api` yields three test files — all three must pass.
+- If you cannot locate an acceptance test file for the feature, list where you looked (root feature dir **and** the recursive per-package search above) and ask the user for the path (or whether acceptance was generated at all) — do not silently skip.
 
 **Run them:**
 - If `acceptance.command` is set, use it (substitute the resolved file for `{{FILE}}` if the placeholder is present).
@@ -152,11 +161,11 @@ Do not advance to Step 6 while a CRITICAL or HIGH finding is open and unaddresse
 
 Run the **repo-root** quality commands — every gate that is configured *and* required — from `repoRoot`, regardless of whether the repo is single-package or a monorepo:
 
-For each of `build`, `typecheck`, `lint`, `test` (skip `build` if unset; skip `typecheck`/`lint`/`test` when its `require*` flag is `false` or its command is unset):
+For each of `build`, `typecheck`, `lint`, `test`, `format` (skip `build` if unset; skip `typecheck`/`lint`/`test` when its `require*` flag is `false` or its command is unset; run `format` — the check variant, e.g. `ruff format --check` — whenever `quality.commands.format` is set, since nax enforces it as a quality gate):
 ```bash
 <the exact command string from quality.commands.<gate>>
 ```
-Run the **unscoped** commands (the full repo), not the `*Scoped` variants — this is the final whole-repo gate. Capture each exit code.
+Run the **unscoped** commands (the full repo), not the `*Scoped` variants — this is the final whole-repo gate. Use the **check** command (`format`), never the mutating `formatFix`/`lintFix`, in the gate; only reach for the `*Fix` variant as a proposed fix under user approval. Capture each exit code.
 
 Every run must be **green (exit 0)**. If any gate fails:
 1. Show the failing output.
@@ -169,6 +178,7 @@ Quality (repo root):
   typecheck  PASS
   lint       PASS
   test       PASS
+  format     PASS
   build      (skipped — not configured)
 ```
 
@@ -196,7 +206,19 @@ git rev-parse --abbrev-ref HEAD
 ```
 If the current branch **is** the base/default branch, do **not** push to it. Tell the user, propose a branch name derived from the feature (e.g. `feat/<featureName>`), and create it **with approval** before continuing.
 
-Push the branch (`git push -u origin <branch>`) so the remote has the commits. If there are uncommitted changes (e.g. from Step 5/6 fixes), surface them and ask the user how to handle them (commit them — with an appropriate conventional-commit message — or stop) before pushing. Never auto-commit without approval.
+**Reconcile the working tree before pushing — mandatory.** A PR/MR ships only what is committed; any modified-but-unstaged or **untracked** file silently stays out of it, and the PR then omits part of the feature. Uncommitted state arrives from **two** distinct sources, and you must account for both:
+1. **Left behind by the nax run** — nax's auto-commit can miss newly-created files, leaving them untracked before nax-finish even starts.
+2. **Created by nax-finish itself** — the fixes you applied while driving the gates green (Step 3 acceptance fixes, Step 5 review fixes, Step 6 quality fixes) are edits in the working tree that are easy to apply and then forget to commit. **This is the most common cause:** the agent fixes a finding, the gate goes green, and the change is never committed — so the PR ships the *unfixed* code.
+
+So before `git push`, always inspect the **full** working-tree state — never assume your own fixes were committed:
+```bash
+git status --porcelain   # lists BOTH modified (` M`) and untracked (`??`) paths
+```
+If the output is non-empty, surface every entry (including untracked files — group them so the user sees what is new vs modified) and ask how to handle them: commit them (with an appropriate conventional-commit message; `git add -A` to capture untracked files too), or stop. **Never auto-commit without approval, and never push while `git status --porcelain` is non-empty unless the user explicitly tells you to leave those files out.** Then push the branch:
+```bash
+git push -u origin <branch>
+```
+so the remote has the commits.
 
 ### 7c. Find a template
 
@@ -240,6 +262,9 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 |:--------|:-----------|
 | Hardcoding `bun test` / `npm run lint` | Read `quality.commands.*` and `acceptance.command` from config (Step 2) |
 | Running the whole acceptance suite | Scope to the changed feature's acceptance file(s) (Step 3) |
+| Detecting monorepo with `ls .nax/mono/*/config.json` | Use `find .nax/mono -name config.json` (configs nest deeper) and trust `project.type: "monorepo"` (Step 2) |
+| Looking for the acceptance test only in the root `.nax/features/<name>/` on a monorepo | It lives per-package at `<packageDir>/.nax/features/<name>/<testPath>`; `find -path '*/.nax/features/<name>/<testPath>'` to get all of them (Step 3) |
+| Applying acceptance/review/quality fixes but never committing them — PR ships the unfixed code | Treat Step 7b as the reconciliation point: `git status --porcelain` before push catches both nax-leftover and your-own-uncommitted fixes; commit (with approval) or explicitly leave out (Step 7b) |
 | Reviewing before the feature passes its own tests | Acceptance is the fail-fast gate — run it before review (Steps 3 → 4) |
 | Looping per-package quality in a monorepo | Run the **root** `quality.commands` once — they fan out via the orchestrator (Step 6) |
 | Applying review/fix changes without asking | Every fix needs explicit user approval (Steps 3, 5, 6) |
