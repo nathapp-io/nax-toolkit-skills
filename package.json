@@ -5,6 +5,8 @@
   "type": "module",
   "main": ".opencode/plugins/nax-toolkit.js",
   "scripts": {
+    "bump": "node scripts/bump-version.mjs",
+    "version:sync": "node scripts/bump-version.mjs sync",
     "sync:codex-skills": "node scripts/sync-codex-plugin-skills.mjs",
     "verify:codex-skills": "node scripts/verify-codex-plugin-skills.mjs",
     "test:codex-marketplace": "node scripts/verify-codex-marketplace.mjs",
