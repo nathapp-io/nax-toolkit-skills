@@ -1,11 +1,11 @@
 ---
 name: nax-finish
-description: Finalize a completed nax feature through to an opened MR/PR. Resolves the feature's spec source from .nax/features/<name>/spec.md, .nax/specs/, docs/specs/, or the prd.json fallback (asks the user if none resolves), and short-circuits if the branch is already merged. Reads the nax config (root plus per-package .nax/mono/<pkg>/config.json) for the repo's real quality commands (build/typecheck/lint/test) and acceptance command, drives the changed feature's acceptance tests to green first (feature-scoped), runs the post-impl-review skill and triages findings with the user, fixes approved findings, runs the repo-root quality gates to green, then — on explicit approval — detects GitHub vs GitLab, fills any PR/MR template, summarizes the spec as the body, and opens it with gh/glab. Use after a nax run implements a feature and you want to review, verify, and ship it — triggers include "finish this nax feature", "wrap up the nax run", "/nax-finish <feature>".
+description: Finalize a completed nax feature through to an opened MR/PR. Resolves the feature's spec source from .nax/features/<name>/spec.md, .nax/specs/, docs/specs/, or the prd.json fallback (asks the user if none resolves), and short-circuits if the branch is already merged. Reads the nax config (root plus per-package .nax/mono/<pkg>/config.json) for the repo's real quality commands (build/typecheck/lint/test) and acceptance command, drives the changed feature's acceptance tests to green first (feature-scoped), dispatches a subagent to run the post-impl-review skill and triages the returned findings with the user, fixes approved findings, runs the repo-root quality gates to green, then — on explicit approval — detects GitHub vs GitLab, fills any PR/MR template, summarizes the spec as the body, and opens it with gh/glab. Use after a nax run implements a feature and you want to review, verify, and ship it — triggers include "finish this nax feature", "wrap up the nax run", "/nax-finish <feature>".
 ---
 
 # nax-finish
 
-Finalize a completed nax feature: prove the changed feature's acceptance tests pass, review the implementation, fix what the user approves, prove the repo-root quality gates are green, and — only on explicit approval — open a PR/MR whose body summarizes the spec. This skill **orchestrates**; it delegates the actual review to the `post-impl-review` skill and runs the repo's own configured commands rather than inventing any.
+Finalize a completed nax feature: prove the changed feature's acceptance tests pass, review the implementation, fix what the user approves, prove the repo-root quality gates are green, and — only on explicit approval — open a PR/MR whose body summarizes the spec. This skill **orchestrates**; it delegates the actual review to a subagent running the `post-impl-review` skill (read-only, isolated context — only the findings come back) and runs the repo's own configured commands rather than inventing any.
 
 **Order rationale:** the cheap, deterministic acceptance gate runs **before** the expensive LLM review — a feature that fails its own spec contract shouldn't consume a full review + triage. Review then scrutinizes working code (including whether each green test is actually sound). The heavy repo-root quality gate runs **last**, once, after all review fixes are in, so it isn't re-invalidated and re-run.
 
@@ -132,19 +132,23 @@ The run must be **green**. If it fails:
 
 Print `Acceptance: PASS (<feature> — N tests)` when green.
 
-## Step 4: Run post-impl-review
+## Step 4: Run post-impl-review (in a subagent)
 
-Now that the feature passes its own contract, review the working code. Invoke the **`post-impl-review`** skill (via the Skill tool — it is bundled in the same nax-toolkit) with the **resolved `specSource.path`**, not the bare feature name — otherwise post-impl-review repeats the same `spec.md` lookup that already failed in Step 1 for most features:
-- `specSource.kind === "markdown"` → `post-impl-review <path>`.
-- `specSource.kind === "prd"` → `post-impl-review <path-to-prd.json>`. post-impl-review reads the file and derives requirements from the PRD's structured stories/ACs (it already supports specs whose requirements come from structured/inferred sources). Tell the user the requirements source for this review is the PRD, not a prose spec.
+Now that the feature passes its own contract, review the working code. **Delegate the review to a subagent** rather than running it inline: post-impl-review is read-only (it prints findings and writes no file), and it is the most context-hungry step — Step 4b makes it read the full diff *plus* every unchanged collaborator the diff calls into *plus* all project rule files. Running it inline would pull all that raw material into the nax-finish context and leave it there through triage, fixing, the quality gates, and PR composition. A subagent reads it in an isolated context and returns only the structured findings + verdict — exactly what Step 5 triage needs. Read-only review in the subagent, gated fixing in the main thread (Step 5).
 
-Let it diff against the base branch and produce its severity-graded findings and verdict.
+**Dispatch one `general-purpose` agent** (via the Agent/Task tool) and instruct it to invoke the **`post-impl-review`** skill (bundled in the same nax-toolkit) with the **resolved `specSource.path`** — not the bare feature name — otherwise post-impl-review repeats the same `spec.md` lookup that already failed in Step 1 for most features. Pass it:
+- The spec path: `specSource.kind === "markdown"` → tell it to run `post-impl-review <path>`; `specSource.kind === "prd"` → run `post-impl-review <path-to-prd.json>` and note that the requirements source is the PRD's structured stories/ACs, not a prose spec (post-impl-review already supports structured/inferred requirement sources).
+- An instruction to follow post-impl-review exactly (diff against the base branch, all five dimensions, the 80% confidence threshold, the verdict labels) and to **return the full findings report verbatim as its final message** — that report is the only thing that comes back, so it must be complete.
 
-Relay the review's verdict and findings to the user verbatim — this is the report. Hold the findings list for Step 5.
+The agent re-derives the base branch and diff itself, so it needs nothing beyond the spec path.
+
+**Do not fan out one review per package on a monorepo.** post-impl-review is deliberately holistic — its Integration dimension catches defects on the boundary *between* packages. Splitting it per-package would lose exactly that cross-package signal. One review subagent over the whole diff, always.
+
+When the subagent returns, **relay its verdict and findings to the user verbatim** — this is the report. Hold the findings list for Step 5.
 
 Note that review adds signal even on a green feature: `post-impl-review` checks whether each *covering test is actually sound* (tautological or order-dependent tests make a green run meaningless), so don't treat Step 3's pass as making the review redundant.
 
-If post-impl-review stops with its own error (no diff, no base branch, etc.), surface that error and stop; there is nothing to finalize.
+If the subagent reports that post-impl-review stopped with its own error (no diff, no base branch, etc.), surface that error and stop; there is nothing to finalize.
 
 ## Step 5: Triage findings and fix with approval
 
@@ -152,7 +156,7 @@ Present the findings grouped by severity. Then:
 
 - **Recommend** a fix for every CRITICAL and HIGH finding, and for MEDIUM findings where the fix is clear and low-risk. State LOW findings but don't push fixes for them.
 - **Apply nothing without explicit user approval.** Propose the concrete change (file + edit) and wait for the user to approve, modify, or skip each one (batching related fixes is fine — just make the set explicit). The user may legitimately accept a finding as-is (e.g. an intentional deviation) — record that and move on.
-- After applying approved fixes, **re-run post-impl-review** (Step 4) to confirm the fixes landed and introduced no new CRITICAL/HIGH findings. Loop until the verdict is `ALIGNED`, or the user explicitly accepts the remaining findings and tells you to proceed.
+- After applying approved fixes, **re-run post-impl-review by dispatching a fresh `general-purpose` subagent** (same as Step 4) to confirm the fixes landed and introduced no new CRITICAL/HIGH findings. A fresh subagent re-derives the diff from scratch and keeps the main context clean across loop iterations. Loop until the verdict is `ALIGNED`, or the user explicitly accepts the remaining findings and tells you to proceed.
 - **Re-run the feature's acceptance tests (Step 3) whenever a fix changed code.** A review fix can break the contract Step 3 proved; the acceptance run is cheap and feature-scoped, so re-verify it green before moving on. If no code changed (all findings waived), skip the re-run.
 
 Do not advance to Step 6 while a CRITICAL or HIGH finding is open and unaddressed, or while acceptance is red, unless the user explicitly waives it. Note any waived findings — they belong in the PR/MR body later.
@@ -266,6 +270,7 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Looking for the acceptance test only in the root `.nax/features/<name>/` on a monorepo | It lives per-package at `<packageDir>/.nax/features/<name>/<testPath>`; `find -path '*/.nax/features/<name>/<testPath>'` to get all of them (Step 3) |
 | Applying acceptance/review/quality fixes but never committing them — PR ships the unfixed code | Treat Step 7b as the reconciliation point: `git status --porcelain` before push catches both nax-leftover and your-own-uncommitted fixes; commit (with approval) or explicitly leave out (Step 7b) |
 | Reviewing before the feature passes its own tests | Acceptance is the fail-fast gate — run it before review (Steps 3 → 4) |
+| Running post-impl-review inline, or fanning out one review per package | Dispatch a single `general-purpose` subagent over the whole diff — read-only, isolated context, holistic integration findings (Step 4) |
 | Looping per-package quality in a monorepo | Run the **root** `quality.commands` once — they fan out via the orchestrator (Step 6) |
 | Applying review/fix changes without asking | Every fix needs explicit user approval (Steps 3, 5, 6) |
 | Not re-checking acceptance after a review fix | A fix can break the contract — re-run the feature's acceptance tests (Step 5) |
