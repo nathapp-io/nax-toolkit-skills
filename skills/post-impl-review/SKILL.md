@@ -1,13 +1,28 @@
 ---
 name: post-impl-review
-description: Post-implementation code review against a feature spec. Reads the spec (.nax/features/<name>/spec.md, .nax/specs/*.md, or a given path) and diffs changed code against the default branch. Checks compliance (every AC/story covered, and is each covering test sound?), drift (does the implementation match the spec's approach, API shape, and constraints?), integration (does the changed code work against the unchanged collaborators it calls into?), convention compliance (does the diff obey the project's CLAUDE.md / .nax/rules / .claude/rules?), and code quality (test isolation, dead code, resource leaks, error handling, concurrency, performance, accessibility, security) independent of the spec. Reads unchanged callees the diff depends on and loads project rule files when present. Applies an 80% confidence threshold for high-signal findings. Prints severity-graded findings with a single verdict. Use after completing a feature implementation to verify it matches the spec before merging.
+description: Post-implementation code review against a feature spec. Reads the spec (.nax/features/<name>/spec.md, .nax/specs/*.md, or a given path) and diffs changed code against the default branch. Checks compliance (every AC/story covered, and is each covering test sound?), drift (does the implementation match the spec's approach, API shape, and constraints?), integration (does the changed code work against the unchanged collaborators it calls into?), convention compliance (does the diff obey the project's CLAUDE.md / .nax/rules / .claude/rules?), and code quality (test isolation, dead code, resource leaks, error handling, concurrency, performance, accessibility, security, and open-ended design/maintainability) independent of the spec. Reads unchanged callees the diff depends on and loads project rule files when present. Applies a tiered confidence threshold (≥80% on spec-relative dimensions, ≥60% on grounded code-quality findings) to stay high-signal without suppressing real maintainability concerns. Prints severity-graded findings with a single verdict. Use after completing a feature implementation to verify it matches the spec before merging.
 ---
 
 # Post-Implementation Review
 
-Review changed code against a feature spec across five dimensions: compliance (every AC/story covered, and is each covering test actually sound?), drift (implementation deviates from spec approach, API shape, or constraints), integration (changed code works against the unchanged collaborators it calls into), convention compliance (changed code obeys the project's own rule files), and code quality (spec-independent defects in the changed lines — test isolation, dead code, resource leaks, error handling, concurrency, performance, accessibility, security). Report only findings you are ≥80% confident are real. Print severity-graded findings to the terminal with a unified verdict.
+Review changed code against a feature spec across five dimensions: compliance (every AC/story covered, and is each covering test actually sound?), drift (implementation deviates from spec approach, API shape, or constraints), integration (changed code works against the unchanged collaborators it calls into), convention compliance (changed code obeys the project's own rule files), and code quality (spec-independent defects and design/maintainability concerns in the changed lines — test isolation, dead code, resource leaks, error handling, concurrency, performance, accessibility, security, separation of concerns, abstraction quality, misleading names, unhandled edge cases). Report spec-relative findings at ≥80% confidence and code-quality findings at ≥60% when anchored to a changed line with a concrete cost. Print severity-graded findings to the terminal with a unified verdict.
 
 **Announce at start:** "Using post-impl-review to review implementation against `<resolved-spec-path>`."
+
+## Step 0: Run the review in a fresh subagent (dispatch guard)
+
+The analysis (Steps 1–6) runs in an **isolated subagent** so the review gets fresh context — no anchoring on whoever wrote or orchestrated the code, and no pollution of the caller's context with the full diff plus every collaborator file and rule file the review reads. This skill owns its own dispatch: callers (a direct `/post-impl-review`, or another skill such as nax-finish invoking it inline) do **not** dispatch a subagent themselves — they just invoke this skill and relay its result.
+
+**Are you the review worker?** You are the worker if, and only if, your task prompt contains the marker `POST_IMPL_REVIEW_WORKER`.
+
+- **If you ARE the worker:** skip the rest of this step and run Steps 1–6 inline in your own (already isolated) context. Your `args` is the concrete spec path the dispatcher resolved, so Step 1 is a direct path hit. Instead of printing to a terminal, **return the full Step 6 findings report verbatim as your final message** — that message is the only thing that travels back to the dispatcher.
+
+- **If you are NOT the worker** (invoked directly, or inline by another skill):
+  1. **Resolve the spec path first, in your own context** using Step 1's resolution rules, through to printing `Spec: <resolved-path>`. Do this here — not in the worker — so that if resolution must ask the user (multiple specs found), the prompt reaches the actual user. You need the *path*; you don't need to read the file's contents (the worker does that). Stop on any Step 1 resolution error exactly as Step 1 specifies.
+  2. **Dispatch exactly ONE `general-purpose` subagent** (Agent/Task tool). Instruct it to invoke the **post-impl-review** skill with `args` set to the **resolved concrete spec path** and with the marker `POST_IMPL_REVIEW_WORKER` present in its prompt; to follow the skill exactly (diff against the base branch, all five dimensions, the tiered confidence thresholds, the verdict labels); and to **return the full findings report verbatim as its final message**. Dispatch one worker over the **whole diff** — never fan out per-package; the Integration dimension depends on seeing cross-package boundaries holistically.
+  3. **Relay the worker's report verbatim** to the user (or calling skill) and **STOP** — do not run Steps 1–6 yourself. If the worker reports the review stopped with an error (no diff, no base branch, empty diff, etc.), surface that error verbatim and stop.
+
+A subagent cannot itself dispatch another subagent, so the `POST_IMPL_REVIEW_WORKER` marker is what prevents nesting — and even if the marker were ever absent, the worker would fall through to running inline rather than recursing.
 
 ## Step 1: Resolve the spec
 
@@ -203,12 +218,18 @@ Scan the diff (production **and** test code) for high-signal defects that are re
 - **Performance:** N+1 queries or network calls in a loop; blocking I/O on a hot path; an obviously quadratic scan over a large collection the diff introduces.
 - **Accessibility (UI diffs only):** interactive elements without an accessible name/label, missing `alt`, non-keyboard-reachable controls, form inputs with no associated label.
 - **Security (only when the diff touches it):** hardcoded secrets, unvalidated user input reaching a sink, injection vectors.
+- **Design & maintainability (open-ended — not a closed checklist):** a changed function that conflates multiple responsibilities (poor separation of concerns); an abstraction the diff introduces that is premature (single caller, speculative generality) or leaky (callers must understand its internals to use it safely); logic the diff writes inline that an existing helper already provides (reinvention, not just literal duplication); control flow so nested or convoluted the next reader will misread it; an identifier whose name actively misleads about what it holds or does; an edge case the changed code's *own* logic implies but doesn't handle. These are the qualitative "this code isn't good yet" findings — judge them, don't skip them because they aren't on the defect list above. Anchor each to the changed line and state the concrete cost (what breaks, or who is misled, later).
 
-Do **not** report formatting, naming taste, or hypotheticals outside the changed lines. This dimension is for defects you can point at on a specific changed line, not aspirations.
+Every finding here must point at a specific changed line and name a concrete cost — a bug, a future break, or a reader who will be misled. Skip pure formatting and personal taste that carry no such cost, and skip hypotheticals about code outside the diff. But a design or maintainability concern grounded in a changed line and its cost **is** in scope even though it's not on the defect checklist above — that is exactly the signal this dimension exists to surface.
 
 **No double-counting:** when a test-isolation defect also downgrades an AC to Partial under Compliance, report it **once** — a single finding that names the defect and notes the AC consequence (see the Step 6 example), not one finding per dimension.
 
-**Confidence threshold (precision over volume):** before reporting any finding, ask how confident you are that it is a *real* issue someone will actually hit — not a maybe, not a stylistic preference, not a pre-existing issue the diff didn't introduce. **Only report findings you are ≥80% confident are real.** A missing AC, a runtime crash you traced through the collaborator, and an in-scope project-rule violation clear this bar easily. A "this might be slow" hunch you haven't reasoned through does not — drop it. Prefer five solid findings over twenty speculative ones; a noisy report gets ignored.
+**Confidence threshold — tiered by dimension (precision where it's cheap to be wrong, recall where the value lives):** before reporting any finding, ask how confident you are that it is a *real* issue, not a pre-existing one the diff didn't introduce. The bar differs by dimension:
+
+- **Spec-relative dimensions (Compliance, Drift, Integration, Convention Compliance): report only findings you are ≥80% confident are real.** A false "AC missing" or a phantom integration crash is expensive and erodes trust in the whole report. A missing AC, a runtime crash you traced through the collaborator, and an in-scope project-rule violation clear this bar easily; a "this might be slow" hunch you haven't reasoned through does not — drop it.
+- **Code Quality & Test Integrity: report findings you are ≥60% confident are real, *provided* each is anchored to a specific changed line and names a concrete maintenance or correctness cost.** Design and maintainability problems are inherently probabilistic — a muddy abstraction, a misleading name, or a fragile edge case rarely clears 80%, and a blanket 80% gate is precisely what makes this report miss the quality issues it exists to catch. Let these land as MEDIUM or LOW per the severity table rather than dropping them; the implementer can waive them, but they should see them. Still exclude pure formatting and personal taste that carry no stated cost.
+
+Across both tiers, prefer findings that point at a line and explain the cost over speculation — but do **not** over-suppress the quality tier to hit an arbitrary count. A real maintainability concern stated with its cost is worth surfacing even at moderate confidence.
 
 Classify each finding using this severity table:
 
@@ -221,7 +242,7 @@ Classify each finding using this severity table:
 
 ## Step 6: Print findings
 
-Print the full report to the terminal. Do not write any file.
+Print the full report to the terminal. Do not write any file. (If you are the review worker dispatched in Step 0, "print" means **return this exact report as your final message** — it is relayed back verbatim by the dispatcher.)
 
 **Format:**
 ```
