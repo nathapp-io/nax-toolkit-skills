@@ -153,83 +153,16 @@ If no rule files exist, note `(No project rule files found — Convention Compli
 
 **Do this before judging anything.** Most real defects in a focused diff live on the boundary between the changed code and the *unchanged* code it calls into — and that unchanged code is, by definition, not in the diff. A diff-only read cannot see them.
 
-From the filtered diff, build a list of **external touchpoints** — every symbol the changed code *uses* but does not *define* in the diff:
-
-- **Callees:** functions/methods the new lines call whose body lives in an unchanged file (e.g. `strategy_instance.get_references(...)`, `provider.cache.get_ohlcv(...)`).
-- **Polymorphic / interface calls:** any call dispatched through a base class, protocol, or registry. The diff sees one signature; the real behaviour is in *every concrete implementation*. Enumerate them.
-- **New or changed arguments to existing APIs:** a value the diff now passes that the callee didn't receive before — especially empty/sentinel/`None`/`{}`/`[]` values, or a newly-shaped object. Verify the callee tolerates it.
-- **Consumers of changed outputs:** unchanged code that reads a field, sentinel, or return value whose meaning the diff altered.
-- **Collaborators named in the spec:** if the spec asserts a cross-cutting goal ("every built-in strategy works", "all callers", "each adapter"), that goal is a claim *about unchanged code*. You must open those files to verify it — the diff alone can never prove it.
-
-For each touchpoint, **read the actual definition(s)** with Read/Grep and check the changed code's assumption holds for *all* of them, not just the convenient case. Use Grep to find every implementation of an overridden method before concluding it's safe.
-
-Examples of assumptions that only break in unchanged code:
-- The diff calls `iface.method(emptyValue)`; one concrete implementation immediately indexes a required key → runtime `KeyError`/`NullPointerException` for that case.
-- The diff sets a sentinel to `{}` instead of `None`; a downstream guard checks `is None`, so `{}` slips through and produces a misleading error or silent NaN.
-- The spec says "works for every strategy"; the diff only added tests for static/test-double strategies, leaving the dynamic real ones unverified.
-
-Treat an untested cross-cutting claim as **unverified, not satisfied** — surface it as a finding rather than assuming coverage.
+Build the list of external touchpoints — every symbol the changed code *uses* but does not *define* (callees, polymorphic/interface calls, new arguments to existing APIs, consumers of changed outputs, collaborators named in the spec) — and read each definition with Read/Grep before judging. The full procedure with worked examples is in **`references/spec-review.md` → "Map external touchpoints first."** Treat an untested cross-cutting claim as **unverified, not satisfied**.
 
 ## Step 5: Analysis
 
-With the full spec content, the filtered diff, **the collaborator code you read in Step 4b, and the project rules you loaded in Step 4a** in context, perform the analysis covering five dimensions:
+With the full spec content, the filtered diff, **the collaborator code you read in Step 4b, and the project rules you loaded in Step 4a** in context, analyse across two reference-driven groups of dimensions:
 
-**Compliance — per AC/story/requirement:**
-For each numbered or named AC, story, or requirement in the spec, determine:
-- **Covered** — the diff clearly addresses it
-- **Partial** — the diff touches it but leaves something incomplete
-- **Missing** — nothing in the diff implements it
-
-**Coverage ≠ correctness:** when an AC's coverage is a test, do not stop at "a test exists." Open the test body and verify it (a) restores any global / `os.environ` / filesystem / singleton state it mutates (teardown or fixture), (b) is deterministic and order-independent, and (c) asserts the AC's actual behaviour rather than a tautology. A test that passes only by accident of ordering, or that asserts nothing meaningful, is **Partial**, not Covered.
-
-**If the spec has no numbered or named ACs** (it's written as prose): derive implicit requirements from the prose — treat each described behaviour, endpoint, or constraint as a requirement. Note in the findings header: `(Spec has no structured ACs — requirements inferred from prose)`.
-
-**Renames and deletions:** treat them as intentional changes when evaluating compliance. A diff showing `rename from A to B` or a deleted file counts as coverage for an AC that required moving or removing that module.
-
-**Drift — holistic across the diff:**
-Check whether the implementation matches the spec's described intent:
-- API shape: do endpoints, request fields, response fields, and status codes match?
-- Approach: is the architectural pattern (module structure, design pattern, data flow) what the spec called for?
-- Constraints: are hard requirements respected (e.g. "must use HMAC-SHA256", "must be idempotent", "must validate at startup")?
-- Naming: do key identifiers (routes, types, env vars, functions) match the spec's terminology?
-
-**Integration — does the changed code actually work against the unchanged collaborators?** (uses the Step 4b touchpoints)
-For each external touchpoint, check whether the changed code's assumptions hold for *every* real implementation/consumer:
-- Will any concrete callee raise (KeyError, NPE, ValueError, panic) for an input the diff now passes — especially empty/sentinel/`None`/`[]`/`{}` values?
-- Does any sentinel or output the diff changed reach a downstream guard that interprets it the wrong way (`{}` slipping past an `is None` check; `[]` treated as "provided")?
-- Does the spec's cross-cutting claim ("every X works") actually hold for the real, non-test-double implementations — and is each one exercised by a test? An untested real path is a finding, not a pass.
-- Are there edge inputs the new tool/endpoint schema now permits (e.g. an explicitly empty array) that route into a broken branch?
-
-**Convention Compliance — does the diff obey the project's own rules?** (uses the rules loaded in Step 4a)
-For each concrete directive you extracted, check whether the changed lines violate it. Only flag rules that actually apply to the changed files (respect `paths:` / `appliesTo:` scoping). Examples of the *kind* of directive to check — the real list comes from the loaded files, not this list:
-- Forbidden APIs / patterns (e.g. a banned import, `console.log` in source, a Node API in a Bun-native repo, hardcoded patterns the project routes through a resolver).
-- Required structure (barrel imports vs internal paths, file-size limits, mandated error/base classes, dependency-injection patterns).
-- Required fields / format (e.g. a mandated structured-log field, conventional-commit style, naming conventions for routes/types/env vars).
-
-Cite the specific rule file and directive in the finding (`forbidden-patterns.md: no console.log in src/`). A violation of an explicit, in-scope project rule is a real finding; a generic style opinion **not** backed by a loaded rule is not — do not invent rules. If Step 4a found no rule files, skip this dimension entirely.
-
-**Code Quality & Test Integrity — spec-independent defects in the changed lines:**
-Scan the diff (production **and** test code) for high-signal defects that are real regardless of what the spec says. Keep this bounded — report only concrete, objective issues, not style preferences:
-- **Test isolation:** mutating `os.environ` / globals / singletons / filesystem without teardown; cross-test ordering dependence; shared mutable fixtures. A test that only passes because another test happens to clean up after it is a defect even when the suite is currently green.
-- **Dead / redundant code:** assignments with no effect, unreachable branches, set-up the constructor already performed, unused locals introduced by the diff; logic duplicated from an existing helper the diff could have reused.
-- **Resource leaks:** opened files / sockets / handles / subprocesses not closed; timers / listeners not cleared.
-- **Error handling:** swallowed exceptions, bare catches that hide failures, missing validation on a newly-introduced input path.
-- **Concurrency:** shared state mutated without synchronisation; `await` inside a loop that should be batched; a race between a check and the action it guards.
-- **Performance:** N+1 queries or network calls in a loop; blocking I/O on a hot path; an obviously quadratic scan over a large collection the diff introduces.
-- **Accessibility (UI diffs only):** interactive elements without an accessible name/label, missing `alt`, non-keyboard-reachable controls, form inputs with no associated label.
-- **Security (only when the diff touches it):** hardcoded secrets, unvalidated user input reaching a sink, injection vectors.
-- **Design & maintainability (open-ended — not a closed checklist):** a changed function that conflates multiple responsibilities (poor separation of concerns); an abstraction the diff introduces that is premature (single caller, speculative generality) or leaky (callers must understand its internals to use it safely); logic the diff writes inline that an existing helper already provides (reinvention, not just literal duplication); control flow so nested or convoluted the next reader will misread it; an identifier whose name actively misleads about what it holds or does; an edge case the changed code's *own* logic implies but doesn't handle. These are the qualitative "this code isn't good yet" findings — judge them, don't skip them because they aren't on the defect list above. Anchor each to the changed line and state the concrete cost (what breaks, or who is misled, later).
-
-Every finding here must point at a specific changed line and name a concrete cost — a bug, a future break, or a reader who will be misled. Skip pure formatting and personal taste that carry no such cost, and skip hypotheticals about code outside the diff. But a design or maintainability concern grounded in a changed line and its cost **is** in scope even though it's not on the defect checklist above — that is exactly the signal this dimension exists to surface.
+- **Spec-relative dimensions — read `references/spec-review.md` and apply it in full:** Compliance (every AC/story covered, each covering test sound), Drift (implementation matches the spec's approach, API shape, constraints, naming), Integration (the changed code works against every real implementation/consumer of the Step 4b touchpoints), and Convention Compliance (the diff obeys the in-scope directives from the rules loaded in Step 4a). Apply the **≥80% confidence threshold** defined there. If Step 4a found no rule files, skip Convention Compliance.
+- **Code-quality dimension — read `references/code-quality.md` and apply it in full:** spec-independent defects and design/maintainability concerns in the changed lines (test isolation, dead/redundant code, resource leaks, error handling, concurrency, performance, accessibility, security, and open-ended design/maintainability). Run its per-function enumeration forcing function, and apply the **≥60% confidence threshold** defined there — anchored to a changed line with a concrete cost. Do not over-suppress this tier to hit an arbitrary count.
 
 **No double-counting:** when a test-isolation defect also downgrades an AC to Partial under Compliance, report it **once** — a single finding that names the defect and notes the AC consequence (see the Step 6 example), not one finding per dimension.
-
-**Confidence threshold — tiered by dimension (precision where it's cheap to be wrong, recall where the value lives):** before reporting any finding, ask how confident you are that it is a *real* issue, not a pre-existing one the diff didn't introduce. The bar differs by dimension:
-
-- **Spec-relative dimensions (Compliance, Drift, Integration, Convention Compliance): report only findings you are ≥80% confident are real.** A false "AC missing" or a phantom integration crash is expensive and erodes trust in the whole report. A missing AC, a runtime crash you traced through the collaborator, and an in-scope project-rule violation clear this bar easily; a "this might be slow" hunch you haven't reasoned through does not — drop it.
-- **Code Quality & Test Integrity: report findings you are ≥60% confident are real, *provided* each is anchored to a specific changed line and names a concrete maintenance or correctness cost.** Design and maintainability problems are inherently probabilistic — a muddy abstraction, a misleading name, or a fragile edge case rarely clears 80%, and a blanket 80% gate is precisely what makes this report miss the quality issues it exists to catch. Let these land as MEDIUM or LOW per the severity table rather than dropping them; the implementer can waive them, but they should see them. Still exclude pure formatting and personal taste that carry no stated cost.
-
-Across both tiers, prefer findings that point at a line and explain the cost over speculation — but do **not** over-suppress the quality tier to hit an arbitrary count. A real maintainability concern stated with its cost is worth surfacing even at moderate confidence.
 
 Classify each finding using this severity table:
 
