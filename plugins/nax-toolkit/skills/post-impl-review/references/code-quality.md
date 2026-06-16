@@ -38,6 +38,9 @@ Report only concrete, objective issues, not style preferences:
   no associated label.
 - **Security (only when the diff touches it):** hardcoded secrets, unvalidated
   user input reaching a sink, injection vectors.
+- **Type safety:** unsafe casts, `any`/`unknown` escapes, weakened or widened
+  types the diff introduces, or a narrowing the diff drops — anywhere the change
+  trades a compile-time guarantee for a runtime risk.
 - **Design & maintainability (open-ended — not a closed checklist):** a changed
   function that conflates multiple responsibilities (poor separation of
   concerns); an abstraction the diff introduces that is premature (single caller,
@@ -45,11 +48,13 @@ Report only concrete, objective issues, not style preferences:
   it safely); logic the diff writes inline that an existing helper already
   provides (reinvention, not just literal duplication); control flow so nested or
   convoluted the next reader will misread it; an identifier whose name actively
-  misleads about what it holds or does; an edge case the changed code's *own*
-  logic implies but doesn't handle. These are the qualitative "this code isn't
-  good yet" findings — judge them, don't skip them because they aren't on the
-  defect list above. Anchor each to the changed line and state the concrete cost
-  (what breaks, or who is misled, later).
+  misleads about what it holds or does; a comment or docstring the diff now leaves
+  stale or contradicting the code it sits on, or a changed public API left without
+  the docs a caller needs; an edge case the changed code's *own* logic implies but
+  doesn't handle. These are the qualitative "this code isn't good yet" findings —
+  judge them, don't skip them because they aren't on the defect list above. Anchor
+  each to the changed line and state the concrete cost (what breaks, or who is
+  misled, later).
 
 Every finding here must point at a specific changed line and name a concrete cost
 — a bug, a future break, or a reader who will be misled. Skip pure formatting and
