@@ -9,20 +9,25 @@ Review changed code against a feature spec across five dimensions: compliance (e
 
 **Announce at start:** "Using post-impl-review to review implementation against `<resolved-spec-path>`."
 
-## Step 0: Run the review in a fresh subagent (dispatch guard)
+## Step 0: Dispatch — resolve, fan out two review workers, merge
 
-The analysis (Steps 1–6) runs in an **isolated subagent** so the review gets fresh context — no anchoring on whoever wrote or orchestrated the code, and no pollution of the caller's context with the full diff plus every collaborator file and rule file the review reads. This skill owns its own dispatch: callers (a direct `/post-impl-review`, or another skill such as nax-finish invoking it inline) do **not** dispatch a subagent themselves — they just invoke this skill and relay its result.
+This skill is the **dispatcher**. Whoever invokes it (a direct `/post-impl-review`, or another skill such as nax-finish invoking it inline) just invokes it and relays its result — they do **not** spawn a subagent themselves. The dispatcher does the cheap shared prep in its own context, then fans the actual review out to **two isolated workers running in parallel**:
 
-**Are you the review worker?** You are the worker if, and only if, your task prompt contains the marker `POST_IMPL_REVIEW_WORKER`.
+- a **SPEC worker** for the spec-relative dimensions (Compliance, Drift, Integration, Convention), and
+- a **QUALITY worker** for spec-independent code-quality and design/maintainability.
 
-- **If you ARE the worker:** skip the rest of this step and run Steps 1–6 inline in your own (already isolated) context. Your `args` is the concrete spec path the dispatcher resolved, so Step 1 is a direct path hit. Instead of printing to a terminal, **return the full Step 6 findings report verbatim as your final message** — that message is the only thing that travels back to the dispatcher.
+Splitting them is deliberate: a single agent juggling all five dimensions front-loads the checklist-shaped spec dimensions and treats the open-ended code-quality pass as an afterthought, which is exactly why quality issues slip through. Two workers each get fresh, undivided context, and the QUALITY worker uses the `code-reviewer` agent — a reviewer-tuned system prompt with no spec-compliance work to crowd it out.
 
-- **If you are NOT the worker** (invoked directly, or inline by another skill):
-  1. **Resolve the spec path first, in your own context** using Step 1's resolution rules, through to printing `Spec: <resolved-path>`. Do this here — not in the worker — so that if resolution must ask the user (multiple specs found), the prompt reaches the actual user. You need the *path*; you don't need to read the file's contents (the worker does that). Stop on any Step 1 resolution error exactly as Step 1 specifies.
-  2. **Dispatch exactly ONE `general-purpose` subagent** (Agent/Task tool). Instruct it to invoke the **post-impl-review** skill with `args` set to the **resolved concrete spec path** and with the marker `POST_IMPL_REVIEW_WORKER` present in its prompt; to follow the skill exactly (diff against the base branch, all five dimensions, the tiered confidence thresholds, the verdict labels); and to **return the full findings report verbatim as its final message**. Dispatch one worker over the **whole diff** — never fan out per-package; the Integration dimension depends on seeing cross-package boundaries holistically.
-  3. **Relay the worker's report verbatim** to the user (or calling skill) and **STOP** — do not run Steps 1–6 yourself. If the worker reports the review stopped with an error (no diff, no base branch, empty diff, etc.), surface that error verbatim and stop.
+**Dispatcher procedure:**
 
-A subagent cannot itself dispatch another subagent, so the `POST_IMPL_REVIEW_WORKER` marker is what prevents nesting — and even if the marker were ever absent, the worker would fall through to running inline rather than recursing.
+1. **Resolve the spec path** using Step 1's rules, in your own context, so a "multiple specs found" prompt reaches the real user. Stop on any Step 1 error.
+2. **Detect the base branch and run the guards** (Steps 2–3) in your own context, using only `--name-only` and `--stat` (NOT the full diff content — keep your context clean). Stop on any base-branch error; print the empty-diff message and stop if nothing reviewable remains. Capture the base branch name and the stat summary for the header.
+3. **Dispatch BOTH workers IN PARALLEL** — one message, two Agent/Task calls. Each reviews the **whole diff**; never fan out per-package (Integration needs cross-package boundaries holistically). Neither worker reads this Step 0 — give each a self-contained prompt:
+   - **SPEC worker** — `agentType: general-purpose`. Prompt: *"You are the post-impl-review SPEC worker. Base branch: `origin/<branch>`. Spec: `<resolved-path>`. Read `skills/post-impl-review/SKILL.md` Steps 2–4 and `skills/post-impl-review/references/spec-review.md`, then review the whole `git diff origin/<branch>...HEAD` against the spec across the four spec-relative dimensions (Compliance, Drift, Integration, Convention Compliance) at the ≥80% confidence threshold. Return ONLY your findings as the `[SEVERITY] …` blocks defined in Step 6 (or the literal `No findings.`) — no header, no verdict line."*
+   - **QUALITY worker** — `agentType: code-reviewer`. Prompt: *"You are the post-impl-review QUALITY worker. Base branch: `origin/<branch>`. Read `skills/post-impl-review/SKILL.md` Steps 2–4 and `skills/post-impl-review/references/code-quality.md`, then review the whole `git diff origin/<branch>...HEAD` for spec-independent defects and design/maintainability concerns. Do NOT read the spec — code quality only. Run the per-function enumeration forcing function and apply the ≥60% confidence threshold, anchoring each finding to a changed line with a concrete cost. Return ONLY your findings as the `[SEVERITY] …` blocks defined in Step 6 (or the literal `No findings.`) — no header, no verdict line."*
+4. **Merge and print** (Step 6): combine both workers' findings, dedupe the cross-worker overlap, sort, and print the header + unified findings + single verdict. Relay it verbatim to the caller. If a worker fails outright, note it in the header and continue with the other's findings rather than aborting the whole review.
+
+Neither the `general-purpose` SPEC worker nor the `code-reviewer` QUALITY worker re-invokes this skill, and the `code-reviewer` agent cannot dispatch further subagents — so there is no recursion to guard against. (The dispatcher must therefore run in a context that *can* spawn subagents — i.e. the caller's main context, which is how `/post-impl-review` and nax-finish both invoke it.)
 
 ## Step 1: Resolve the spec
 
@@ -80,6 +85,8 @@ Error: spec file is empty at <path>
 ```
 
 ## Step 2: Detect base branch and get the diff
+
+> **Workers:** the dispatcher already gave you the base branch — skip detection and use it. Run only the `git diff origin/<branch>...HEAD` commands below to get the diff content. (The dispatcher itself runs the detection and the `--name-only`/`--stat` guards.)
 
 **Detect base branch** — run in order, use the first that succeeds:
 
@@ -157,12 +164,12 @@ Build the list of external touchpoints — every symbol the changed code *uses* 
 
 ## Step 5: Analysis
 
-With the full spec content, the filtered diff, **the collaborator code you read in Step 4b, and the project rules you loaded in Step 4a** in context, analyse across two reference-driven groups of dimensions:
+Run **only the dimension group assigned to your worker role** (Step 0). Each group is defined in full in its reference file; read your file and apply it against the filtered diff, the collaborator code you read in Step 4b, and (SPEC worker) the spec plus the project rules from Step 4a.
 
-- **Spec-relative dimensions — read `references/spec-review.md` and apply it in full:** Compliance (every AC/story covered, each covering test sound), Drift (implementation matches the spec's approach, API shape, constraints, naming), Integration (the changed code works against every real implementation/consumer of the Step 4b touchpoints), and Convention Compliance (the diff obeys the in-scope directives from the rules loaded in Step 4a). Apply the **≥80% confidence threshold** defined there. If Step 4a found no rule files, skip Convention Compliance.
-- **Code-quality dimension — read `references/code-quality.md` and apply it in full:** spec-independent defects and design/maintainability concerns in the changed lines (test isolation, dead/redundant code, resource leaks, error handling, concurrency, performance, accessibility, security, and open-ended design/maintainability). Run its per-function enumeration forcing function, and apply the **≥60% confidence threshold** defined there — anchored to a changed line with a concrete cost. Do not over-suppress this tier to hit an arbitrary count.
+- **SPEC worker — read `references/spec-review.md` and apply it in full:** Compliance (every AC/story covered, each covering test sound), Drift (implementation matches the spec's approach, API shape, constraints, naming), Integration (the changed code works against every real implementation/consumer of the Step 4b touchpoints), and Convention Compliance (the diff obeys the in-scope directives from the rules loaded in Step 4a). Apply the **≥80% confidence threshold** defined there. If Step 4a found no rule files, skip Convention Compliance.
+- **QUALITY worker — read `references/code-quality.md` and apply it in full:** spec-independent defects and design/maintainability concerns in the changed lines (test isolation, dead/redundant code, resource leaks, error handling, concurrency, performance, accessibility, security, and open-ended design/maintainability). Run its per-function enumeration forcing function, and apply the **≥60% confidence threshold** defined there — anchored to a changed line with a concrete cost. Do not over-suppress this tier to hit an arbitrary count.
 
-**No double-counting:** when a test-isolation defect also downgrades an AC to Partial under Compliance, report it **once** — a single finding that names the defect and notes the AC consequence (see the Step 6 example), not one finding per dimension.
+**No double-counting (handled at merge):** a test-isolation defect can surface in both workers — the QUALITY worker as a test-isolation finding, the SPEC worker as an AC downgraded to Partial. The dispatcher dedupes these into one finding at merge time (Step 6); a worker reports what it sees within its own group.
 
 Classify each finding using this severity table:
 
@@ -173,9 +180,17 @@ Classify each finding using this severity table:
 | MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; an integration gap reachable through a now-permitted input (e.g. empty-array regression); a test-isolation defect that can cause false positives or flakiness under reordering/parallelism; a resource leak; a swallowed error on a real path; a concurrency/race or performance regression the diff introduces; or an accessibility defect on a new interactive UI element |
 | LOW | Minor naming deviation, style mismatch, dead/redundant/duplicated code, unused locals, a soft convention deviation, or other non-blocking gap |
 
-## Step 6: Print findings
+## Step 6: Findings — worker output and dispatcher merge
 
-Print the full report to the terminal. Do not write any file. (If you are the review worker dispatched in Step 0, "print" means **return this exact report as your final message** — it is relayed back verbatim by the dispatcher.)
+**If you are a worker** (SPEC or QUALITY): return **only your findings**, nothing else. Emit each as a `[SEVERITY] …` block in the format below — no `Spec:`/`Base:` header, no `FINDINGS` divider, no `VERDICT` line (the dispatcher adds those). If you found nothing in your group, return the literal line `No findings.` as your entire final message. That message is the only thing that travels back to the dispatcher.
+
+**If you are the dispatcher:** collect both workers' findings and merge them into one report printed to the terminal (do not write any file):
+
+1. **Concatenate** the SPEC and QUALITY findings.
+2. **Dedupe the cross-worker overlap:** when a SPEC finding and a QUALITY finding describe the *same defect on the same line* (typically a test-isolation issue the QUALITY worker flagged and the SPEC worker also counted as an AC downgraded to Partial), keep **one** finding — prefer the version that names both the defect and the AC consequence. Findings in different files or about different defects are never merged.
+3. **Sort:** CRITICAL first, then HIGH, then MEDIUM, then LOW.
+4. **Header:** print the `Spec:` and `Base:` lines from the prep you ran in Step 0. If Step 4a found no rule files, append `(No project rule files found — Convention Compliance skipped)`. If a worker failed outright, append `(<SPEC|QUALITY> worker failed — partial review)` and continue with the other's findings.
+5. **Verdict:** count findings by severity across the merged set and print the verdict line + label.
 
 **Format:**
 ```
