@@ -9,7 +9,7 @@
     {
       "name": "nax-toolkit",
       "description": "A toolkit of operational skills for nax projects. Currently bundles nax-setup.",
-      "version": "0.2.5",
+      "version": "0.2.6",
       "source": "./",
       "author": {
         "name": "William Khoo",
