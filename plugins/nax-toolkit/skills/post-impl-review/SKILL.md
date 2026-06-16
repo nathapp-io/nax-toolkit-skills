@@ -9,20 +9,25 @@ Review changed code against a feature spec across five dimensions: compliance (e
 
 **Announce at start:** "Using post-impl-review to review implementation against `<resolved-spec-path>`."
 
-## Step 0: Run the review in a fresh subagent (dispatch guard)
+## Step 0: Dispatch — resolve, fan out two review workers, merge
 
-The analysis (Steps 1–6) runs in an **isolated subagent** so the review gets fresh context — no anchoring on whoever wrote or orchestrated the code, and no pollution of the caller's context with the full diff plus every collaborator file and rule file the review reads. This skill owns its own dispatch: callers (a direct `/post-impl-review`, or another skill such as nax-finish invoking it inline) do **not** dispatch a subagent themselves — they just invoke this skill and relay its result.
+This skill is the **dispatcher**. Whoever invokes it (a direct `/post-impl-review`, or another skill such as nax-finish invoking it inline) just invokes it and relays its result — they do **not** spawn a subagent themselves. The dispatcher does the cheap shared prep in its own context, then fans the actual review out to **two isolated workers running in parallel**:
 
-**Are you the review worker?** You are the worker if, and only if, your task prompt contains the marker `POST_IMPL_REVIEW_WORKER`.
+- a **SPEC worker** for the spec-relative dimensions (Compliance, Drift, Integration, Convention), and
+- a **QUALITY worker** for spec-independent code-quality and design/maintainability.
 
-- **If you ARE the worker:** skip the rest of this step and run Steps 1–6 inline in your own (already isolated) context. Your `args` is the concrete spec path the dispatcher resolved, so Step 1 is a direct path hit. Instead of printing to a terminal, **return the full Step 6 findings report verbatim as your final message** — that message is the only thing that travels back to the dispatcher.
+Splitting them is deliberate: a single agent juggling all five dimensions front-loads the checklist-shaped spec dimensions and treats the open-ended code-quality pass as an afterthought, which is exactly why quality issues slip through. Two workers each get fresh, undivided context, and the QUALITY worker uses the `code-reviewer` agent — a reviewer-tuned system prompt with no spec-compliance work to crowd it out.
 
-- **If you are NOT the worker** (invoked directly, or inline by another skill):
-  1. **Resolve the spec path first, in your own context** using Step 1's resolution rules, through to printing `Spec: <resolved-path>`. Do this here — not in the worker — so that if resolution must ask the user (multiple specs found), the prompt reaches the actual user. You need the *path*; you don't need to read the file's contents (the worker does that). Stop on any Step 1 resolution error exactly as Step 1 specifies.
-  2. **Dispatch exactly ONE `general-purpose` subagent** (Agent/Task tool). Instruct it to invoke the **post-impl-review** skill with `args` set to the **resolved concrete spec path** and with the marker `POST_IMPL_REVIEW_WORKER` present in its prompt; to follow the skill exactly (diff against the base branch, all five dimensions, the tiered confidence thresholds, the verdict labels); and to **return the full findings report verbatim as its final message**. Dispatch one worker over the **whole diff** — never fan out per-package; the Integration dimension depends on seeing cross-package boundaries holistically.
-  3. **Relay the worker's report verbatim** to the user (or calling skill) and **STOP** — do not run Steps 1–6 yourself. If the worker reports the review stopped with an error (no diff, no base branch, empty diff, etc.), surface that error verbatim and stop.
+**Dispatcher procedure:**
 
-A subagent cannot itself dispatch another subagent, so the `POST_IMPL_REVIEW_WORKER` marker is what prevents nesting — and even if the marker were ever absent, the worker would fall through to running inline rather than recursing.
+1. **Resolve the spec path** using Step 1's rules, in your own context, so a "multiple specs found" prompt reaches the real user. Stop on any Step 1 error.
+2. **Detect the base branch and run the guards** (Steps 2–3) in your own context, using only `--name-only` and `--stat` (NOT the full diff content — keep your context clean). Stop on any base-branch error; print the empty-diff message and stop if nothing reviewable remains. Capture the base branch name and the stat summary for the header. Also run the one cheap rule-file check from Step 4a (`ls CLAUDE.md AGENTS.md 2>/dev/null; find .nax/rules .claude/rules -name "*.md" 2>/dev/null`) — you only need to know *whether any exist*, so you can decide the Convention-skipped header note in step 4; do not read their contents (the SPEC worker does).
+3. **Dispatch BOTH workers IN PARALLEL** — one message, two Agent/Task calls. Each reviews the **whole diff**; never fan out per-package (Integration needs cross-package boundaries holistically). Neither worker reads this Step 0 — give each a self-contained prompt:
+   - **SPEC worker** — `agentType: general-purpose`. Prompt: *"You are the post-impl-review SPEC worker. Base branch: `origin/<branch>`. Spec: `<resolved-path>`. Read `skills/post-impl-review/SKILL.md` Steps 2–4 and `skills/post-impl-review/references/spec-review.md`, then review the whole `git diff origin/<branch>...HEAD` against the spec across the four spec-relative dimensions (Compliance, Drift, Integration, Convention Compliance) at the ≥80% confidence threshold. Return ONLY your findings as the `[SEVERITY] …` blocks defined in Step 6 (or the literal `No findings.`) — no header, no verdict line."*
+   - **QUALITY worker** — `agentType: code-reviewer` (if that agent type is unavailable in this repo, fall back to `general-purpose` — the split's value is the separate, undivided context, not strictly the agent's system prompt). Prompt: *"You are the post-impl-review QUALITY worker. Base branch: `origin/<branch>`. Read `skills/post-impl-review/SKILL.md` Steps 2–3 (for the diff) and 4b (collaborators you may need to judge a defect — skip 4a, conventions are the SPEC worker's job) and `skills/post-impl-review/references/code-quality.md`, then review the whole `git diff origin/<branch>...HEAD` for spec-independent defects and design/maintainability concerns. Do NOT read the spec — code quality only. Run the per-function enumeration forcing function and apply the ≥60% confidence threshold, anchoring each finding to a changed line with a concrete cost. Return ONLY your findings as the `[SEVERITY] …` blocks defined in Step 6 (or the literal `No findings.`) — no header, no verdict line."*
+4. **Merge and print** (Step 6): combine both workers' findings, dedupe the cross-worker overlap, sort, and print the header + unified findings + single verdict. Relay it verbatim to the caller. If a worker fails outright, note it in the header and continue with the other's findings rather than aborting the whole review.
+
+Neither the `general-purpose` SPEC worker nor the `code-reviewer` QUALITY worker re-invokes this skill, and the `code-reviewer` agent cannot dispatch further subagents — so there is no recursion to guard against. (The dispatcher must therefore run in a context that *can* spawn subagents — i.e. the caller's main context, which is how `/post-impl-review` and nax-finish both invoke it.)
 
 ## Step 1: Resolve the spec
 
@@ -80,6 +85,8 @@ Error: spec file is empty at <path>
 ```
 
 ## Step 2: Detect base branch and get the diff
+
+> **Workers:** the dispatcher already gave you the base branch — skip detection and use it. Run only the `git diff origin/<branch>...HEAD` commands below to get the diff content. (The dispatcher itself runs the detection and the `--name-only`/`--stat` guards.)
 
 **Detect base branch** — run in order, use the first that succeeds:
 
@@ -153,83 +160,16 @@ If no rule files exist, note `(No project rule files found — Convention Compli
 
 **Do this before judging anything.** Most real defects in a focused diff live on the boundary between the changed code and the *unchanged* code it calls into — and that unchanged code is, by definition, not in the diff. A diff-only read cannot see them.
 
-From the filtered diff, build a list of **external touchpoints** — every symbol the changed code *uses* but does not *define* in the diff:
-
-- **Callees:** functions/methods the new lines call whose body lives in an unchanged file (e.g. `strategy_instance.get_references(...)`, `provider.cache.get_ohlcv(...)`).
-- **Polymorphic / interface calls:** any call dispatched through a base class, protocol, or registry. The diff sees one signature; the real behaviour is in *every concrete implementation*. Enumerate them.
-- **New or changed arguments to existing APIs:** a value the diff now passes that the callee didn't receive before — especially empty/sentinel/`None`/`{}`/`[]` values, or a newly-shaped object. Verify the callee tolerates it.
-- **Consumers of changed outputs:** unchanged code that reads a field, sentinel, or return value whose meaning the diff altered.
-- **Collaborators named in the spec:** if the spec asserts a cross-cutting goal ("every built-in strategy works", "all callers", "each adapter"), that goal is a claim *about unchanged code*. You must open those files to verify it — the diff alone can never prove it.
-
-For each touchpoint, **read the actual definition(s)** with Read/Grep and check the changed code's assumption holds for *all* of them, not just the convenient case. Use Grep to find every implementation of an overridden method before concluding it's safe.
-
-Examples of assumptions that only break in unchanged code:
-- The diff calls `iface.method(emptyValue)`; one concrete implementation immediately indexes a required key → runtime `KeyError`/`NullPointerException` for that case.
-- The diff sets a sentinel to `{}` instead of `None`; a downstream guard checks `is None`, so `{}` slips through and produces a misleading error or silent NaN.
-- The spec says "works for every strategy"; the diff only added tests for static/test-double strategies, leaving the dynamic real ones unverified.
-
-Treat an untested cross-cutting claim as **unverified, not satisfied** — surface it as a finding rather than assuming coverage.
+Build the list of external touchpoints — every symbol the changed code *uses* but does not *define* (callees, polymorphic/interface calls, new arguments to existing APIs, consumers of changed outputs, collaborators named in the spec) — and read each definition with Read/Grep before judging. The full procedure with worked examples is in **`references/spec-review.md` → "Map external touchpoints first."** Treat an untested cross-cutting claim as **unverified, not satisfied**.
 
 ## Step 5: Analysis
 
-With the full spec content, the filtered diff, **the collaborator code you read in Step 4b, and the project rules you loaded in Step 4a** in context, perform the analysis covering five dimensions:
+Run **only the dimension group assigned to your worker role** (Step 0). Each group is defined in full in its reference file; read your file and apply it against the filtered diff, the collaborator code you read in Step 4b, and (SPEC worker) the spec plus the project rules from Step 4a.
 
-**Compliance — per AC/story/requirement:**
-For each numbered or named AC, story, or requirement in the spec, determine:
-- **Covered** — the diff clearly addresses it
-- **Partial** — the diff touches it but leaves something incomplete
-- **Missing** — nothing in the diff implements it
+- **SPEC worker — read `references/spec-review.md` and apply it in full:** Compliance (every AC/story covered, each covering test sound), Drift (implementation matches the spec's approach, API shape, constraints, naming), Integration (the changed code works against every real implementation/consumer of the Step 4b touchpoints), and Convention Compliance (the diff obeys the in-scope directives from the rules loaded in Step 4a). Apply the **≥80% confidence threshold** defined there. If Step 4a found no rule files, skip Convention Compliance.
+- **QUALITY worker — read `references/code-quality.md` and apply it in full:** spec-independent defects and design/maintainability concerns in the changed lines (test isolation, dead/redundant code, resource leaks, error handling, concurrency, performance, accessibility, security, and open-ended design/maintainability). Run its per-function enumeration forcing function, and apply the **≥60% confidence threshold** defined there — anchored to a changed line with a concrete cost. Do not over-suppress this tier to hit an arbitrary count.
 
-**Coverage ≠ correctness:** when an AC's coverage is a test, do not stop at "a test exists." Open the test body and verify it (a) restores any global / `os.environ` / filesystem / singleton state it mutates (teardown or fixture), (b) is deterministic and order-independent, and (c) asserts the AC's actual behaviour rather than a tautology. A test that passes only by accident of ordering, or that asserts nothing meaningful, is **Partial**, not Covered.
-
-**If the spec has no numbered or named ACs** (it's written as prose): derive implicit requirements from the prose — treat each described behaviour, endpoint, or constraint as a requirement. Note in the findings header: `(Spec has no structured ACs — requirements inferred from prose)`.
-
-**Renames and deletions:** treat them as intentional changes when evaluating compliance. A diff showing `rename from A to B` or a deleted file counts as coverage for an AC that required moving or removing that module.
-
-**Drift — holistic across the diff:**
-Check whether the implementation matches the spec's described intent:
-- API shape: do endpoints, request fields, response fields, and status codes match?
-- Approach: is the architectural pattern (module structure, design pattern, data flow) what the spec called for?
-- Constraints: are hard requirements respected (e.g. "must use HMAC-SHA256", "must be idempotent", "must validate at startup")?
-- Naming: do key identifiers (routes, types, env vars, functions) match the spec's terminology?
-
-**Integration — does the changed code actually work against the unchanged collaborators?** (uses the Step 4b touchpoints)
-For each external touchpoint, check whether the changed code's assumptions hold for *every* real implementation/consumer:
-- Will any concrete callee raise (KeyError, NPE, ValueError, panic) for an input the diff now passes — especially empty/sentinel/`None`/`[]`/`{}` values?
-- Does any sentinel or output the diff changed reach a downstream guard that interprets it the wrong way (`{}` slipping past an `is None` check; `[]` treated as "provided")?
-- Does the spec's cross-cutting claim ("every X works") actually hold for the real, non-test-double implementations — and is each one exercised by a test? An untested real path is a finding, not a pass.
-- Are there edge inputs the new tool/endpoint schema now permits (e.g. an explicitly empty array) that route into a broken branch?
-
-**Convention Compliance — does the diff obey the project's own rules?** (uses the rules loaded in Step 4a)
-For each concrete directive you extracted, check whether the changed lines violate it. Only flag rules that actually apply to the changed files (respect `paths:` / `appliesTo:` scoping). Examples of the *kind* of directive to check — the real list comes from the loaded files, not this list:
-- Forbidden APIs / patterns (e.g. a banned import, `console.log` in source, a Node API in a Bun-native repo, hardcoded patterns the project routes through a resolver).
-- Required structure (barrel imports vs internal paths, file-size limits, mandated error/base classes, dependency-injection patterns).
-- Required fields / format (e.g. a mandated structured-log field, conventional-commit style, naming conventions for routes/types/env vars).
-
-Cite the specific rule file and directive in the finding (`forbidden-patterns.md: no console.log in src/`). A violation of an explicit, in-scope project rule is a real finding; a generic style opinion **not** backed by a loaded rule is not — do not invent rules. If Step 4a found no rule files, skip this dimension entirely.
-
-**Code Quality & Test Integrity — spec-independent defects in the changed lines:**
-Scan the diff (production **and** test code) for high-signal defects that are real regardless of what the spec says. Keep this bounded — report only concrete, objective issues, not style preferences:
-- **Test isolation:** mutating `os.environ` / globals / singletons / filesystem without teardown; cross-test ordering dependence; shared mutable fixtures. A test that only passes because another test happens to clean up after it is a defect even when the suite is currently green.
-- **Dead / redundant code:** assignments with no effect, unreachable branches, set-up the constructor already performed, unused locals introduced by the diff; logic duplicated from an existing helper the diff could have reused.
-- **Resource leaks:** opened files / sockets / handles / subprocesses not closed; timers / listeners not cleared.
-- **Error handling:** swallowed exceptions, bare catches that hide failures, missing validation on a newly-introduced input path.
-- **Concurrency:** shared state mutated without synchronisation; `await` inside a loop that should be batched; a race between a check and the action it guards.
-- **Performance:** N+1 queries or network calls in a loop; blocking I/O on a hot path; an obviously quadratic scan over a large collection the diff introduces.
-- **Accessibility (UI diffs only):** interactive elements without an accessible name/label, missing `alt`, non-keyboard-reachable controls, form inputs with no associated label.
-- **Security (only when the diff touches it):** hardcoded secrets, unvalidated user input reaching a sink, injection vectors.
-- **Design & maintainability (open-ended — not a closed checklist):** a changed function that conflates multiple responsibilities (poor separation of concerns); an abstraction the diff introduces that is premature (single caller, speculative generality) or leaky (callers must understand its internals to use it safely); logic the diff writes inline that an existing helper already provides (reinvention, not just literal duplication); control flow so nested or convoluted the next reader will misread it; an identifier whose name actively misleads about what it holds or does; an edge case the changed code's *own* logic implies but doesn't handle. These are the qualitative "this code isn't good yet" findings — judge them, don't skip them because they aren't on the defect list above. Anchor each to the changed line and state the concrete cost (what breaks, or who is misled, later).
-
-Every finding here must point at a specific changed line and name a concrete cost — a bug, a future break, or a reader who will be misled. Skip pure formatting and personal taste that carry no such cost, and skip hypotheticals about code outside the diff. But a design or maintainability concern grounded in a changed line and its cost **is** in scope even though it's not on the defect checklist above — that is exactly the signal this dimension exists to surface.
-
-**No double-counting:** when a test-isolation defect also downgrades an AC to Partial under Compliance, report it **once** — a single finding that names the defect and notes the AC consequence (see the Step 6 example), not one finding per dimension.
-
-**Confidence threshold — tiered by dimension (precision where it's cheap to be wrong, recall where the value lives):** before reporting any finding, ask how confident you are that it is a *real* issue, not a pre-existing one the diff didn't introduce. The bar differs by dimension:
-
-- **Spec-relative dimensions (Compliance, Drift, Integration, Convention Compliance): report only findings you are ≥80% confident are real.** A false "AC missing" or a phantom integration crash is expensive and erodes trust in the whole report. A missing AC, a runtime crash you traced through the collaborator, and an in-scope project-rule violation clear this bar easily; a "this might be slow" hunch you haven't reasoned through does not — drop it.
-- **Code Quality & Test Integrity: report findings you are ≥60% confident are real, *provided* each is anchored to a specific changed line and names a concrete maintenance or correctness cost.** Design and maintainability problems are inherently probabilistic — a muddy abstraction, a misleading name, or a fragile edge case rarely clears 80%, and a blanket 80% gate is precisely what makes this report miss the quality issues it exists to catch. Let these land as MEDIUM or LOW per the severity table rather than dropping them; the implementer can waive them, but they should see them. Still exclude pure formatting and personal taste that carry no stated cost.
-
-Across both tiers, prefer findings that point at a line and explain the cost over speculation — but do **not** over-suppress the quality tier to hit an arbitrary count. A real maintainability concern stated with its cost is worth surfacing even at moderate confidence.
+**No double-counting (handled at merge):** a test-isolation defect can surface in both workers — the QUALITY worker as a test-isolation finding, the SPEC worker as an AC downgraded to Partial. The dispatcher dedupes these into one finding at merge time (Step 6); a worker reports what it sees within its own group.
 
 Classify each finding using this severity table:
 
@@ -240,9 +180,17 @@ Classify each finding using this severity table:
 | MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; an integration gap reachable through a now-permitted input (e.g. empty-array regression); a test-isolation defect that can cause false positives or flakiness under reordering/parallelism; a resource leak; a swallowed error on a real path; a concurrency/race or performance regression the diff introduces; or an accessibility defect on a new interactive UI element |
 | LOW | Minor naming deviation, style mismatch, dead/redundant/duplicated code, unused locals, a soft convention deviation, or other non-blocking gap |
 
-## Step 6: Print findings
+## Step 6: Findings — worker output and dispatcher merge
 
-Print the full report to the terminal. Do not write any file. (If you are the review worker dispatched in Step 0, "print" means **return this exact report as your final message** — it is relayed back verbatim by the dispatcher.)
+**If you are a worker** (SPEC or QUALITY): return **only your findings**, nothing else. Emit each as a `[SEVERITY] …` block in the format below — no `Spec:`/`Base:` header, no `FINDINGS` divider, no `VERDICT` line (the dispatcher adds those). If you found nothing in your group, return the literal line `No findings.` as your entire final message. That message is the only thing that travels back to the dispatcher.
+
+**If you are the dispatcher:** collect both workers' findings and merge them into one report printed to the terminal (do not write any file):
+
+1. **Normalise each worker's output:** a worker that returned the literal `No findings.` contributes an **empty** finding set — drop that sentinel, do not carry it into the merged list. Then **concatenate** the remaining SPEC and QUALITY findings.
+2. **Dedupe the cross-worker overlap:** when a SPEC finding and a QUALITY finding describe the *same defect on the same line* (typically a test-isolation issue the QUALITY worker flagged and the SPEC worker also counted as an AC downgraded to Partial), keep **one** finding — prefer the version that names both the defect and the AC consequence. Findings in different files or about different defects are never merged.
+3. **Sort:** CRITICAL first, then HIGH, then MEDIUM, then LOW.
+4. **Header:** print the `Spec:` and `Base:` lines from the prep you ran in Step 0. If the Step 0 rule-file check found none, append `(No project rule files found — Convention Compliance skipped)`. If a worker failed outright, append `(<SPEC|QUALITY> worker failed — partial review)` and continue with the other's findings.
+5. **Verdict:** count findings by severity across the merged set and print the verdict line + label. If the merged set is empty (both workers returned `No findings.`), print the no-findings report shown at the end of this step.
 
 **Format:**
 ```
