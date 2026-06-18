@@ -100,6 +100,21 @@ assumptions hold for *every* real implementation/consumer:
 
 ## Convention Compliance — does the diff obey the project's own rules?
 
+**Load the rules first.** Find the repo's own rule files and read every one that
+exists (they may all be absent — then skip this dimension entirely and note
+`(No project rule files found — Convention Compliance skipped)` in your findings):
+
+```bash
+ls CLAUDE.md AGENTS.md 2>/dev/null
+find .nax/rules .claude/rules -name "*.md" 2>/dev/null
+```
+
+`.nax/rules/` takes priority over `.claude/rules/` when they conflict (nax-native
+is canonical). Honour each file's `paths:` / `appliesTo:` frontmatter if present —
+a rule scoped to `src/agents/**` does not apply to a diff under `apps/web/`.
+Extract the concrete, checkable directives (forbidden APIs, required patterns,
+naming, logging fields, file-size limits) and hold them for the checks below.
+
 For each concrete directive extracted from the loaded rule files, check whether
 the changed lines violate it. Only flag rules that actually apply to the changed
 files (respect `paths:` / `appliesTo:` scoping). Examples of the *kind* of
