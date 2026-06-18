@@ -152,7 +152,12 @@ Present the findings grouped by severity. Then:
 
 - **Recommend** a fix for every CRITICAL and HIGH finding, and for MEDIUM findings where the fix is clear and low-risk. State LOW findings but don't push fixes for them.
 - **Apply nothing without explicit user approval.** Propose the concrete change (file + edit) and wait for the user to approve, modify, or skip each one (batching related fixes is fine — just make the set explicit). The user may legitimately accept a finding as-is (e.g. an intentional deviation) — record that and move on.
-- After applying approved fixes, **re-run post-impl-review** (invoke the skill again, same as Step 4) to confirm the fixes landed and introduced no new CRITICAL/HIGH findings. Each invocation spins up a fresh review subagent that re-derives the diff from scratch and keeps the main context clean across loop iterations. Loop until the verdict is `ALIGNED`, or the user explicitly accepts the remaining findings and tells you to proceed.
+- After applying approved fixes, **verify they landed and introduced no new CRITICAL/HIGH findings** — but scale the verification to the fix, don't reflexively re-fan-out the whole review. A full `post-impl-review` re-run is two fresh workers each re-deriving the *entire* diff from scratch; running that after every small fix batch is the single largest source of nax-finish's token cost. Pick the cheapest sufficient check:
+  - **No code changed** (every finding waived) → **skip verification entirely.** Nothing to re-check.
+  - **Only LOW findings were addressed**, with trivial localized edits, and Step 6's quality gates will run anyway → **skip the re-review**; the gates (and a quick read of the edits) are sufficient. Don't spend a review pass to confirm a renamed variable.
+  - **CRITICAL/HIGH/MEDIUM fixes touching a bounded set of files** → run **one targeted verification subagent** (a single `general-purpose` Agent/Task call, not the two-worker fan-out): give it the list of findings you fixed and the files the fixes touched, and ask it to confirm each finding is resolved and that those files introduced no new CRITICAL/HIGH issue. This re-reads only the touched surface, not the whole diff.
+  - **Broad or structural fixes** (many files, a changed architecture/API, or new integration surface a localized check can't see across) → re-invoke the **full `post-impl-review` skill** (same as Step 4); only here is the whole-diff, cross-cutting re-review worth its cost.
+  Each subagent (targeted or full) runs in fresh context and keeps the main context clean across loop iterations. Loop until no CRITICAL/HIGH remains, or the user explicitly accepts the remaining findings and tells you to proceed.
 - **Re-run the feature's acceptance tests (Step 3) whenever a fix changed code.** A review fix can break the contract Step 3 proved; the acceptance run is cheap and feature-scoped, so re-verify it green before moving on. If no code changed (all findings waived), skip the re-run.
 
 Do not advance to Step 6 while a CRITICAL or HIGH finding is open and unaddressed, or while acceptance is red, unless the user explicitly waives it. Note any waived findings — they belong in the PR/MR body later.
@@ -270,6 +275,7 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Looping per-package quality in a monorepo | Run the **root** `quality.commands` once — they fan out via the orchestrator (Step 6) |
 | Applying review/fix changes without asking | Every fix needs explicit user approval (Steps 3, 5, 6) |
 | Not re-checking acceptance after a review fix | A fix can break the contract — re-run the feature's acceptance tests (Step 5) |
+| Re-running the full two-worker post-impl-review after every small fix | Scale verification to the fix: skip for waived/LOW-only, one targeted subagent for bounded fixes, full re-run only for broad/structural changes (Step 5) |
 | Opening the PR/MR automatically | Show body, open **only** on explicit approval (Step 7e) |
 | Pushing to `main`/`master` | Branch first (Step 7b) |
 | Claiming a clean pass after waiving a finding | State waived findings in the body and final summary |
