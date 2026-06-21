@@ -21,37 +21,50 @@ Establish two things: **`featureName`** (the `.nax/features/<name>` directory th
 - **markdown spec** (preferred) — a human-authored `.md`, consumable directly by `post-impl-review`.
 - **PRD** (`prd.json`) — the structured stories+ACs nax generated from the spec. It is **always** present for a completed feature and is a valid requirements source when no markdown spec persists. (In practice most nax feature dirs keep only `prd.json`; the authored `.md` lives under `docs/specs/` or was a transient input to `nax plan`. Do not assume `spec.md` exists.)
 
-**If `args` is an explicit path** (starts with `./`, `/`, or ends in `.md`): use it as the markdown spec. If it doesn't exist, print `Error: spec not found at <path>` and stop.
-
-**Otherwise treat `args` as a feature name** (if empty, pick the feature first — see below), set `featureName`, and search for a spec source in this order — use the first that exists:
-1. `.nax/features/<name>/spec.md` — markdown
-2. `.nax/specs/<name>.md` — markdown
-3. `docs/specs/SPEC-<name>.md`, else the first match of `docs/specs/*<name>*.md` — markdown (nax repos commonly keep the authored spec here)
-4. `.nax/features/<name>/prd.json` — PRD fallback
-
+**Resolve deterministically via the nax CLI** — this is the single source of truth (`post-impl-review` uses the same command, so the two never disagree). Run:
 ```bash
-ls .nax/features/<name>/spec.md .nax/specs/<name>.md docs/specs/SPEC-<name>.md 2>/dev/null
-ls docs/specs/*<name>*.md 2>/dev/null
-ls .nax/features/<name>/prd.json 2>/dev/null
+nax features resolve "<args>" --json    # <args> may be empty
 ```
+The command emits a JSON object on stdout with a `status` (and `featureName`, `specSource {kind,path}`, `candidates`, `checked`, `message` as applicable). Branch on `status`:
+- **`ok`** → record `featureName` and `specSource = { kind, path }` from the output. Proceed.
+- **`ambiguous`** → list `candidates` numbered, ask the user to pick, then re-run `nax features resolve "<pick>" --json`.
+- **`missing`** → show the `checked` paths and ask the user to paste a spec path (or press enter to abort). On a path, re-run `nax features resolve "<path>" --json` (or accept it directly as the markdown spec). Abort only if they decline.
+- **`feature-not-found`** → if `candidates` is non-empty, treat like `ambiguous`; otherwise treat like `missing`.
+- **`not-a-nax-repo`** → print `Error: no .nax/ directory found — is this a nax repo? Run nax-setup first.` and stop.
 
-**If `args` is empty**, discover candidate features first, then resolve the chosen one's spec source via the ordered search above:
-```bash
-find .nax/features -maxdepth 2 -name prd.json 2>/dev/null   # completed features
-find .nax/features -maxdepth 2 -name spec.md 2>/dev/null
-```
-- Exactly one feature → use it. Multiple → list them numbered and ask the user to pick; wait for the answer.
+**Availability + fallback.** `nax features resolve` is available when its stdout is valid JSON carrying a `status` (exit `0` = `ok`, exit `2` = needs-human — both still emit JSON). It is **unavailable** on an older nax — stdout isn't JSON, or stderr shows `unknown command`. If unavailable, say so once and use the **Fallback** below; it mirrors the CLI's algorithm exactly, so the result is identical.
 
-**If no spec source resolves at all** (no markdown spec *and* no `prd.json`): **ask the user** rather than hard-stopping —
-```
-No spec or PRD found for "<name>". Checked:
-  .nax/features/<name>/spec.md
-  .nax/specs/<name>.md
-  docs/specs/SPEC-<name>.md  (and docs/specs/*<name>*.md)
-  .nax/features/<name>/prd.json
-Where is the spec? Paste a path, or press enter to abort.
-```
-Use the path the user provides (markdown spec). Abort only if they decline.
+> **Fallback (older nax without `features resolve`)** — resolve by hand; first existing wins.
+>
+> **If `args` looks like a path** (starts with `./`, `/`, or `~`, contains a `/`, or ends in `.md`/`.json`): use it directly as the spec source — markdown for a `.md`, PRD for a `prd.json`. (This is the route `nax-finish` itself takes when it re-invokes resolution with an already-resolved `specSource.path` such as `.nax/features/<name>/prd.json`.) If it doesn't exist, print `Error: spec not found at <path>` and stop.
+>
+> **Otherwise treat `args` as a feature name** (if empty, discover first — below), set `featureName`, and search in this order:
+> 1. `.nax/features/<name>/spec.md` — markdown
+> 2. `.nax/specs/<name>.md` — markdown
+> 3. `docs/specs/SPEC-<name>.md`, else the first match of `docs/specs/*<name>*.md` — markdown
+> 4. `.nax/features/<name>/prd.json` — PRD fallback
+> ```bash
+> ls .nax/features/<name>/spec.md .nax/specs/<name>.md docs/specs/SPEC-<name>.md 2>/dev/null
+> ls docs/specs/*<name>*.md 2>/dev/null
+> ls .nax/features/<name>/prd.json 2>/dev/null
+> ```
+> **If `args` is empty**, discover candidate features first, then resolve the chosen one via the ordered search above:
+> ```bash
+> find .nax/features -maxdepth 2 -name prd.json 2>/dev/null   # completed features
+> find .nax/features -maxdepth 2 -name spec.md 2>/dev/null
+> ```
+> Exactly one feature → use it. Multiple → list numbered and ask the user to pick.
+>
+> **If no spec source resolves at all** (no markdown spec *and* no `prd.json`): **ask the user** rather than hard-stopping —
+> ```
+> No spec or PRD found for "<name>". Checked:
+>   .nax/features/<name>/spec.md
+>   .nax/specs/<name>.md
+>   docs/specs/SPEC-<name>.md  (and docs/specs/*<name>*.md)
+>   .nax/features/<name>/prd.json
+> Where is the spec? Paste a path, or press enter to abort.
+> ```
+> Use the path the user provides (markdown spec). Abort only if they decline.
 
 Record for later steps:
 - **`featureName`** — the `.nax/features/<name>` dir name (drives acceptance scoping in Step 3). If only a raw path was given with no matching feature dir, ask which feature dir it maps to when Step 3 needs it.
@@ -265,6 +278,7 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 
 | Mistake | Do instead |
 |:--------|:-----------|
+| Hand-resolving the spec with `ls`/`find` when `nax features resolve` exists | Run `nax features resolve "<args>" --json` and branch on `status`; only hand-resolve via the documented Fallback when the command is unavailable on older nax (Step 1) |
 | Hardcoding `bun test` / `npm run lint` | Read `quality.commands.*` and `acceptance.command` from config (Step 2) |
 | Running the whole acceptance suite | Scope to the changed feature's acceptance file(s) (Step 3) |
 | Detecting monorepo with `ls .nax/mono/*/config.json` | Use `find .nax/mono -name config.json` (configs nest deeper) and trust `project.type: "monorepo"` (Step 2) |
