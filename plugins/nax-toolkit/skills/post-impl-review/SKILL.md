@@ -38,55 +38,55 @@ Neither the `general-purpose` SPEC worker nor the `code-reviewer` QUALITY worker
 
 ## Step 1: Resolve the spec
 
-`args` is the text the user typed after `/post-impl-review` when invoking the skill. For example, `/post-impl-review graphify-kb` gives `args = "graphify-kb"`, and `/post-impl-review` alone gives `args = ""`.
+`args` is the text the user typed after `/post-impl-review` when invoking the skill. For example, `/post-impl-review graphify-kb` gives `args = "graphify-kb"`, and `/post-impl-review` alone gives `args = ""`. (When `nax-finish` invokes this skill it already passes the resolved `specSource.path`, so `args` is an explicit path on that route and resolution is a single hit.)
 
-Parse the invocation argument `args`.
+**Resolve deterministically via the nax CLI** — the same command `nax-finish` uses, so direct (`/post-impl-review <name>`) and orchestrated invocations resolve identically. This skill only needs the spec **path**; it already accepts both a markdown spec and a `prd.json` requirements source. Run:
+```bash
+nax features resolve "<args>" --json    # <args> may be empty
+```
+Branch on the JSON `status`:
+- **`ok`** → use `specSource.path` as the resolved spec. Print `Spec: <path> (<kind>)`.
+- **`ambiguous`** (or **`feature-not-found`** with non-empty `candidates`) → list `candidates` numbered, ask the user to pick, then re-run `nax features resolve "<pick>" --json`.
+- **`missing`** (or **`feature-not-found`** with no candidates) → show the `checked` paths and stop, asking the user to pass a path or feature name: `/post-impl-review <name|path>`.
+- **`not-a-nax-repo`** → print `Error: no .nax/ directory found — is this a nax repo?` and stop.
 
-**If `args` is an explicit path** (starts with `./`, `/`, or ends in `.md`):
-- Use it directly. If the file does not exist, print an error and stop:
-  ```
-  Error: spec not found at <path>
-  ```
+**Availability + fallback.** `nax features resolve` is available when its stdout is valid JSON carrying a `status` (exit `0` = `ok`, exit `2` = needs-human — both still emit JSON). It is **unavailable** on an older nax — stdout isn't JSON, or stderr shows `unknown command`. If unavailable, use the **Fallback** below; it mirrors the CLI's 4-tier algorithm exactly, so the result matches what `nax-finish` would resolve.
 
-**If `args` is a plain name** (e.g. `graphify-kb`, no slashes, no `.md`):
-- Try `.nax/features/<name>/spec.md`
-- If not found, also try `.nax/specs/<name>.md`
-- If still not found, print error and stop:
-  ```
-  Error: no spec found for "<name>". Checked:
-    .nax/features/<name>/spec.md
-    .nax/specs/<name>.md
-  ```
-
-**If `args` is empty**:
-- Run:
-  ```bash
-  find .nax/features -name "spec.md" 2>/dev/null
-  find .nax/specs -name "*.md" 2>/dev/null
-  ```
-- If exactly one file found: use it, print the resolved path.
-- If multiple found: list them and ask the user to pick:
-  ```
-  Multiple specs found. Which would you like to review?
-  1. .nax/features/graphify-kb/spec.md
-  2. .nax/features/api-foundation/spec.md
-  3. .nax/specs/fts-tantivy-migration.md
-  Enter number:
-  ```
-  Wait for the user's response, then use the selected path.
-- If none found: print error and stop:
-  ```
-  No spec found. Checked:
-    .nax/features/*/spec.md
-    .nax/specs/*.md
-  Pass a path or feature name: /post-impl-review <name|path>
-  ```
+> **Fallback (older nax without `features resolve`)** — resolve by hand; first existing wins.
+>
+> **If `args` looks like a path** (starts with `./`, `/`, or `~`, contains a `/`, or ends in `.md`/`.json`): use it directly as the spec source — markdown for a `.md`, PRD for a `prd.json` (the path `nax-finish` passes when it invokes this skill). If it doesn't exist, print `Error: spec not found at <path>` and stop.
+>
+> **If `args` is a plain name** (no slashes, no `.md`), search in this order:
+> 1. `.nax/features/<name>/spec.md` — markdown
+> 2. `.nax/specs/<name>.md` — markdown
+> 3. `docs/specs/SPEC-<name>.md`, else the first match of `docs/specs/*<name>*.md` — markdown
+> 4. `.nax/features/<name>/prd.json` — PRD fallback
+> ```bash
+> ls .nax/features/<name>/spec.md .nax/specs/<name>.md docs/specs/SPEC-<name>.md 2>/dev/null
+> ls docs/specs/*<name>*.md 2>/dev/null
+> ls .nax/features/<name>/prd.json 2>/dev/null
+> ```
+> If none exist, print error and stop:
+> ```
+> Error: no spec found for "<name>". Checked:
+>   .nax/features/<name>/spec.md
+>   .nax/specs/<name>.md
+>   docs/specs/SPEC-<name>.md  (and docs/specs/*<name>*.md)
+>   .nax/features/<name>/prd.json
+> ```
+>
+> **If `args` is empty**, discover candidates, then resolve the chosen one via the ordered search above:
+> ```bash
+> find .nax/features -maxdepth 2 -name prd.json 2>/dev/null
+> find .nax/features -maxdepth 2 -name spec.md 2>/dev/null
+> ```
+> Exactly one → use it. Multiple → list numbered and ask the user to pick. None → print error and stop, asking for a path or feature name.
 
 Once resolved, print: `Spec: <resolved-path>`
 
-Read the spec file in full before continuing.
+Read the spec source in full before continuing (the `.md` body, or the `prd.json` stories+ACs).
 
-If the spec file exists but is empty, print an error and stop:
+If a resolved markdown spec exists but is empty, print an error and stop:
 ```
 Error: spec file is empty at <path>
 ```
