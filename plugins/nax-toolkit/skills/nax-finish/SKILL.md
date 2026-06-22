@@ -25,46 +25,14 @@ Establish two things: **`featureName`** (the `.nax/features/<name>` directory th
 ```bash
 nax features resolve "<args>" --json    # <args> may be empty
 ```
-The command emits a JSON object on stdout with a `status` (and `featureName`, `specSource {kind,path}`, `candidates`, `checked`, `message` as applicable). Branch on `status`:
+The command emits a JSON object on stdout with a `status` (and `featureName`, `specSource {kind,path}`, `acceptance {status,enabled,groups}` (on an `ok` result with a known feature — consumed in Step 3), `candidates`, `checked`, `message` as applicable). Branch on `status`:
 - **`ok`** → record `featureName` and `specSource = { kind, path }` from the output. Proceed.
 - **`ambiguous`** → list `candidates` numbered, ask the user to pick, then re-run `nax features resolve "<pick>" --json`.
 - **`missing`** → show the `checked` paths and ask the user to paste a spec path (or press enter to abort). On a path, re-run `nax features resolve "<path>" --json` (or accept it directly as the markdown spec). Abort only if they decline.
 - **`feature-not-found`** → if `candidates` is non-empty, treat like `ambiguous`; otherwise treat like `missing`.
 - **`not-a-nax-repo`** → print `Error: no .nax/ directory found — is this a nax repo? Run nax-setup first.` and stop.
 
-**Availability + fallback.** `nax features resolve` is available when its stdout is valid JSON carrying a `status` (exit `0` = `ok`, exit `2` = needs-human — both still emit JSON). It is **unavailable** on an older nax — stdout isn't JSON, or stderr shows `unknown command`. If unavailable, say so once and use the **Fallback** below; it mirrors the CLI's algorithm exactly, so the result is identical.
-
-> **Fallback (older nax without `features resolve`)** — resolve by hand; first existing wins.
->
-> **If `args` looks like a path** (starts with `./`, `/`, or `~`, contains a `/`, or ends in `.md`/`.json`): use it directly as the spec source — markdown for a `.md`, PRD for a `prd.json`. (This is the route `nax-finish` itself takes when it re-invokes resolution with an already-resolved `specSource.path` such as `.nax/features/<name>/prd.json`.) If it doesn't exist, print `Error: spec not found at <path>` and stop.
->
-> **Otherwise treat `args` as a feature name** (if empty, discover first — below), set `featureName`, and search in this order:
-> 1. `.nax/features/<name>/spec.md` — markdown
-> 2. `.nax/specs/<name>.md` — markdown
-> 3. `docs/specs/SPEC-<name>.md`, else the first match of `docs/specs/*<name>*.md` — markdown
-> 4. `.nax/features/<name>/prd.json` — PRD fallback
-> ```bash
-> ls .nax/features/<name>/spec.md .nax/specs/<name>.md docs/specs/SPEC-<name>.md 2>/dev/null
-> ls docs/specs/*<name>*.md 2>/dev/null
-> ls .nax/features/<name>/prd.json 2>/dev/null
-> ```
-> **If `args` is empty**, discover candidate features first, then resolve the chosen one via the ordered search above:
-> ```bash
-> find .nax/features -maxdepth 2 -name prd.json 2>/dev/null   # completed features
-> find .nax/features -maxdepth 2 -name spec.md 2>/dev/null
-> ```
-> Exactly one feature → use it. Multiple → list numbered and ask the user to pick.
->
-> **If no spec source resolves at all** (no markdown spec *and* no `prd.json`): **ask the user** rather than hard-stopping —
-> ```
-> No spec or PRD found for "<name>". Checked:
->   .nax/features/<name>/spec.md
->   .nax/specs/<name>.md
->   docs/specs/SPEC-<name>.md  (and docs/specs/*<name>*.md)
->   .nax/features/<name>/prd.json
-> Where is the spec? Paste a path, or press enter to abort.
-> ```
-> Use the path the user provides (markdown spec). Abort only if they decline.
+**Availability + fallback.** `nax features resolve` is available when its stdout is valid JSON carrying a `status` (exit `0` = `ok`, exit `2` = needs-human — both still emit JSON). It is **unavailable** on an older nax — stdout isn't JSON, or stderr shows `unknown command`. If unavailable, say so once and hand-resolve via the **Step 1 fallback** in `references/older-nax-fallback.md` (it mirrors the CLI's algorithm exactly, so the result is identical), then continue with the same `featureName` / `specSource` you record below.
 
 Record for later steps:
 - **`featureName`** — the `.nax/features/<name>` dir name (drives acceptance scoping in Step 3). If only a raw path was given with no matching feature dir, ask which feature dir it maps to when Step 3 needs it.
@@ -121,18 +89,28 @@ If a gate the user expects is missing (e.g. no `test` command at all), say so pl
 
 Run this **before** the review: it's the cheap, deterministic proof that the feature meets its own spec contract. If it can't pass its own acceptance tests, stop here rather than burning a full review + triage.
 
-If `acceptance.enabled` is `false`, print `Acceptance disabled in config — skipping.` and go to Step 4.
+**Scope to the feature being finished — not the whole acceptance suite.** Step 1's `nax features resolve … --json` already resolved the acceptance targets deterministically — it carries an **`acceptance` block** computed from the same SSOT (`groupStoriesByPackage`) the nax runtime uses to place and run these tests, so you do **not** re-derive paths by hand. The block has shape:
 
-**Scope to the feature being finished — not the whole acceptance suite.** Resolve the feature's acceptance test file(s):
+```jsonc
+"acceptance": {
+  "status": "ok" | "disabled" | "no-prd",
+  "enabled": true,                 // effective acceptance.enabled
+  "groups": [                      // one entry per package the feature touches
+    { "packageDir": "apps/api",    // "" for the root package; repo-root-relative
+      "testPath": "apps/api/.nax/features/<feature>/.nax-acceptance.test.ts",  // canonical, repo-root-relative
+      "exists": true,              // is the test file present on disk?
+      "command": "npx jest … {{FILE}}",  // resolved per-package override else root; may be absent
+      "language": "typescript" }
+  ]
+}
+```
 
-- Single-package: `.nax/features/<featureName>/<acceptance.testPath>` — the nax convention places the generated acceptance test inside the feature directory, with the extension matching `project.language` (e.g. `.nax-acceptance.test.ts` for TS, `…test.py` for Python).
-- Monorepo: the feature's stories may span **multiple packages**, and nax writes a **per-package feature directory** — the acceptance test lives at `<packageDir>/.nax/features/<featureName>/<acceptance.testPath>`, **not** in the root `.nax/features/<featureName>/` (the root dir holds only `spec.md` / `prd.json` / `acceptance-*.json` — no test file). The same feature name therefore appears under each package that contributes to it. **Discover every package the feature touches** with a recursive search rather than guessing — don't assume it lives in one place:
-  ```bash
-  # Find every per-package acceptance test for this feature (testPath from config; default _nax_acceptance_test.py / .nax-acceptance.test.ts)
-  find . -path "*/.nax/features/<featureName>/<acceptance.testPath>" -not -path '*/node_modules/*' 2>/dev/null
-  ```
-  Run **each** match, honouring that package's `.nax/mono/<packageDir>/config.json` `acceptance.command`/`testPath` override. A feature spanning `packages/core`, `packages/backtester`, and `apps/api` yields three test files — all three must pass.
-- If you cannot locate an acceptance test file for the feature, list where you looked (root feature dir **and** the recursive per-package search above) and ask the user for the path (or whether acceptance was generated at all) — do not silently skip.
+Branch on `acceptance.status`:
+- **`disabled`** → print `Acceptance disabled in config — skipping.` and go to Step 4.
+- **`no-prd`** → no `prd.json` resolved for the feature; acceptance targets can't be computed. List the feature dir checked and ask the user for the acceptance test path (or whether acceptance was generated at all) — do not silently skip.
+- **`ok`** → run **each** group whose `exists` is `true`. Use that group's `command` (substitute the group's `testPath` for `{{FILE}}` if the placeholder is present); if `command` is absent, fall back to the language-native runner per **Run them** below, matched to the group's `language`. A feature spanning `apps/api` + `apps/cli` yields two groups — **all** existing groups must pass. If a group has `exists: false`, its test file was expected (canonical path) but never generated — surface that to the user rather than skipping silently.
+
+> **Fallback (older nax — no `acceptance` block in the resolve output).** If the Step 1 output lacks an `acceptance` field (older nax `features resolve`, or you used the manual Step 1 fallback), resolve the acceptance target(s) by hand per the **Step 3 fallback** in `references/older-nax-fallback.md` — it covers the single-package path, the per-package monorepo search, and the not-found prompt. Then run them as below.
 
 **Run them:**
 - If `acceptance.command` is set, use it (substitute the resolved file for `{{FILE}}` if the placeholder is present).
@@ -204,67 +182,7 @@ Quality (repo root):
 
 Now everything is green. Prepare the PR/MR, show it to the user, and open it **only after the user explicitly approves**.
 
-### 7a. Detect platform and base branch
-
-```bash
-git remote get-url origin 2>/dev/null
-```
-- Contains `github.com` → GitHub, use `gh`.
-- Contains `gitlab` (any host) → GitLab, use `glab`.
-- Neither / no remote → print the assembled title + body and stop with: "No GitHub/GitLab remote detected — here's the PR body; open it manually."
-
-Detect the base branch the same way post-impl-review does (`git remote show origin | grep 'HEAD branch'`, fallback `origin/main` then `origin/master`).
-
-Verify the CLI is available and authenticated (`gh auth status` / `glab auth status`). If not, fall back to printing the command + body for the user to run.
-
-### 7b. Ensure a pushable branch
-
-```bash
-git rev-parse --abbrev-ref HEAD
-```
-If the current branch **is** the base/default branch, do **not** push to it. Tell the user, propose a branch name derived from the feature (e.g. `feat/<featureName>`), and create it **with approval** before continuing.
-
-**Reconcile the working tree before pushing — mandatory.** A PR/MR ships only what is committed; any modified-but-unstaged or **untracked** file silently stays out of it, and the PR then omits part of the feature. Uncommitted state arrives from **two** distinct sources, and you must account for both:
-1. **Left behind by the nax run** — nax's auto-commit can miss newly-created files, leaving them untracked before nax-finish even starts.
-2. **Created by nax-finish itself** — the fixes you applied while driving the gates green (Step 3 acceptance fixes, Step 5 review fixes, Step 6 quality fixes) are edits in the working tree that are easy to apply and then forget to commit. **This is the most common cause:** the agent fixes a finding, the gate goes green, and the change is never committed — so the PR ships the *unfixed* code.
-
-So before `git push`, always inspect the **full** working-tree state — never assume your own fixes were committed:
-```bash
-git status --porcelain   # lists BOTH modified (` M`) and untracked (`??`) paths
-```
-If the output is non-empty, surface every entry (including untracked files — group them so the user sees what is new vs modified) and ask how to handle them: commit them (with an appropriate conventional-commit message; `git add -A` to capture untracked files too), or stop. **Never auto-commit without approval, and never push while `git status --porcelain` is non-empty unless the user explicitly tells you to leave those files out.** Then push the branch:
-```bash
-git push -u origin <branch>
-```
-so the remote has the commits.
-
-### 7c. Find a template
-
-- GitHub: check `.github/PULL_REQUEST_TEMPLATE.md`, `.github/pull_request_template.md`, `docs/PULL_REQUEST_TEMPLATE.md`, and any file under `.github/PULL_REQUEST_TEMPLATE/`.
-- GitLab: check `.gitlab/merge_request_templates/*.md`.
-
-If a template exists, fill its sections rather than imposing your own structure. If several GitLab templates exist, ask which to use. If none exists, use a clean default: **Summary**, **What changed**, **Test plan**, **Review notes**.
-
-### 7d. Compose the body from the spec
-
-Summarize the **spec** as the body — this is the point of the step:
-- **Summary:** the feature's goal in 1–3 sentences, drawn from the spec's intent.
-- **What changed:** the key stories/ACs delivered (from the spec), aligned with the actual diff stat.
-- **Test plan:** the acceptance result from Step 3 and the repo-root quality gates from Step 6 (list them as checked).
-- **Review notes:** the post-impl-review verdict, plus any findings the user explicitly waived in Step 5 (call them out honestly — don't bury accepted deviations).
-
-Keep it accurate to what actually happened — do not claim gates passed that you skipped, and do not invent ACs the spec doesn't contain.
-
-### 7e. Show, then open on approval
-
-Print the full title + body + target branch. Ask the user to approve, edit, or cancel. **Only after explicit approval**, open it:
-```bash
-# GitHub
-gh pr create --base <base> --head <branch> --title "<title>" --body "<body>"
-# GitLab
-glab mr create --target-branch <base> --source-branch <branch> --title "<title>" --description "<body>"
-```
-Print the resulting URL. If the user edits, revise and re-confirm before opening. If the user cancels, stop and leave the branch pushed so they can open it themselves.
+**Full mechanics live in `references/open-pr-mr.md`** — read it now and follow it. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e show the full title + body and open **only on explicit approval** (leave the branch pushed if cancelled).
 
 ## Final summary
 
