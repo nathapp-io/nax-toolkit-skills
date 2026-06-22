@@ -134,6 +134,7 @@ Exclude these files from the *changed-lines* analysis (do not treat their churn 
 
 - Lockfiles: any file matching `bun.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, or ending in `.lock`
 - Generated output: files in `dist/`, `build/`, `.next/`, `.turbo/`, `__pycache__/`, or matching `*.generated.*`
+- nax artifacts: anything under a `.nax/` directory at **any depth** (`**/.nax/**` — root or nested per-package in a monorepo). This covers specs, PRDs, acceptance result JSON, config, and the generated acceptance tests — nax run output, not reviewable code changes
 - Binary files: git marks these as `Binary files a/... and b/... differ` — skip them entirely
 
 **Size guard:** After filtering, if the remaining diff has more than 500 changed files or more than 8000 lines, print a warning and proceed:
@@ -146,7 +147,7 @@ Consider narrowing scope with /post-impl-review <feature-name>. Proceeding.
 ```
 No changes detected relative to origin/<branch>. Nothing to review.
 ```
-This can happen if the branch has no commits ahead of the base, or if all changes were in excluded files (lockfiles, build output).
+This can happen if the branch has no commits ahead of the base, or if all changes were in excluded files (lockfiles, build output, `.nax/` artifacts).
 
 ## Step 4: Gather context beyond the diff (collaborators + project conventions)
 

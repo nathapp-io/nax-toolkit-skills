@@ -24,6 +24,9 @@ context):
   `Cargo.lock`, `poetry.lock`, or anything ending in `.lock`.
 - Generated output: files in `dist/`, `build/`, `.next/`, `.turbo/`,
   `__pycache__/`, or matching `*.generated.*`.
+- nax artifacts: anything under a `.nax/` directory at **any depth**
+  (`**/.nax/**` — root or nested per-package in a monorepo): specs, PRDs,
+  acceptance result JSON, config, and the generated acceptance tests.
 - Binary files: git marks these `Binary files a/... and b/... differ` — skip them.
 
 ## Read the unchanged collaborators (before judging)
