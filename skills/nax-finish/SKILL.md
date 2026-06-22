@@ -25,7 +25,7 @@ Establish two things: **`featureName`** (the `.nax/features/<name>` directory th
 ```bash
 nax features resolve "<args>" --json    # <args> may be empty
 ```
-The command emits a JSON object on stdout with a `status` (and `featureName`, `specSource {kind,path}`, `candidates`, `checked`, `message` as applicable). Branch on `status`:
+The command emits a JSON object on stdout with a `status` (and `featureName`, `specSource {kind,path}`, `acceptance {status,enabled,groups}` (on an `ok` result with a known feature — consumed in Step 3), `candidates`, `checked`, `message` as applicable). Branch on `status`:
 - **`ok`** → record `featureName` and `specSource = { kind, path }` from the output. Proceed.
 - **`ambiguous`** → list `candidates` numbered, ask the user to pick, then re-run `nax features resolve "<pick>" --json`.
 - **`missing`** → show the `checked` paths and ask the user to paste a spec path (or press enter to abort). On a path, re-run `nax features resolve "<path>" --json` (or accept it directly as the markdown spec). Abort only if they decline.
@@ -121,18 +121,36 @@ If a gate the user expects is missing (e.g. no `test` command at all), say so pl
 
 Run this **before** the review: it's the cheap, deterministic proof that the feature meets its own spec contract. If it can't pass its own acceptance tests, stop here rather than burning a full review + triage.
 
-If `acceptance.enabled` is `false`, print `Acceptance disabled in config — skipping.` and go to Step 4.
+**Scope to the feature being finished — not the whole acceptance suite.** Step 1's `nax features resolve … --json` already resolved the acceptance targets deterministically — it carries an **`acceptance` block** computed from the same SSOT (`groupStoriesByPackage`) the nax runtime uses to place and run these tests, so you do **not** re-derive paths by hand. The block has shape:
 
-**Scope to the feature being finished — not the whole acceptance suite.** Resolve the feature's acceptance test file(s):
+```jsonc
+"acceptance": {
+  "status": "ok" | "disabled" | "no-prd",
+  "enabled": true,                 // effective acceptance.enabled
+  "groups": [                      // one entry per package the feature touches
+    { "packageDir": "apps/api",    // "" for the root package; repo-root-relative
+      "testPath": "apps/api/.nax/features/<feature>/.nax-acceptance.test.ts",  // canonical, repo-root-relative
+      "exists": true,              // is the test file present on disk?
+      "command": "npx jest … {{FILE}}",  // resolved per-package override else root; may be absent
+      "language": "typescript" }
+  ]
+}
+```
 
-- Single-package: `.nax/features/<featureName>/<acceptance.testPath>` — the nax convention places the generated acceptance test inside the feature directory, with the extension matching `project.language` (e.g. `.nax-acceptance.test.ts` for TS, `…test.py` for Python).
-- Monorepo: the feature's stories may span **multiple packages**, and nax writes a **per-package feature directory** — the acceptance test lives at `<packageDir>/.nax/features/<featureName>/<acceptance.testPath>`, **not** in the root `.nax/features/<featureName>/` (the root dir holds only `spec.md` / `prd.json` / `acceptance-*.json` — no test file). The same feature name therefore appears under each package that contributes to it. **Discover every package the feature touches** with a recursive search rather than guessing — don't assume it lives in one place:
-  ```bash
-  # Find every per-package acceptance test for this feature (testPath from config; default _nax_acceptance_test.py / .nax-acceptance.test.ts)
-  find . -path "*/.nax/features/<featureName>/<acceptance.testPath>" -not -path '*/node_modules/*' 2>/dev/null
-  ```
-  Run **each** match, honouring that package's `.nax/mono/<packageDir>/config.json` `acceptance.command`/`testPath` override. A feature spanning `packages/core`, `packages/backtester`, and `apps/api` yields three test files — all three must pass.
-- If you cannot locate an acceptance test file for the feature, list where you looked (root feature dir **and** the recursive per-package search above) and ask the user for the path (or whether acceptance was generated at all) — do not silently skip.
+Branch on `acceptance.status`:
+- **`disabled`** → print `Acceptance disabled in config — skipping.` and go to Step 4.
+- **`no-prd`** → no `prd.json` resolved for the feature; acceptance targets can't be computed. List the feature dir checked and ask the user for the acceptance test path (or whether acceptance was generated at all) — do not silently skip.
+- **`ok`** → run **each** group whose `exists` is `true`. Use that group's `command` (substitute the group's `testPath` for `{{FILE}}` if the placeholder is present); if `command` is absent, fall back to the language-native runner per **Run them** below, matched to the group's `language`. A feature spanning `apps/api` + `apps/cli` yields two groups — **all** existing groups must pass. If a group has `exists: false`, its test file was expected (canonical path) but never generated — surface that to the user rather than skipping silently.
+
+> **Fallback (older nax — no `acceptance` block in the resolve output).** If the Step 1 output lacks an `acceptance` field (older nax `features resolve`, or you used the manual Step 1 fallback), resolve by hand. First check `acceptance.enabled` from config (Step 2); if `false`, skip as above. Then:
+> - Single-package: `.nax/features/<featureName>/<acceptance.testPath>` — the nax convention places the generated acceptance test inside the feature directory, with the extension matching `project.language` (e.g. `.nax-acceptance.test.ts` for TS, `…test.py` for Python).
+> - Monorepo: the feature's stories may span **multiple packages**, and nax writes a **per-package feature directory** — the acceptance test lives at `<packageDir>/.nax/features/<featureName>/<acceptance.testPath>`, **not** in the root `.nax/features/<featureName>/` (the root dir holds only `spec.md` / `prd.json` / `acceptance-*.json` — no test file). The same feature name therefore appears under each package that contributes to it. **Discover every package the feature touches** with a recursive search rather than guessing — don't assume it lives in one place:
+>   ```bash
+>   # Find every per-package acceptance test for this feature (testPath from config; default _nax_acceptance_test.py / .nax-acceptance.test.ts)
+>   find . -path "*/.nax/features/<featureName>/<acceptance.testPath>" -not -path '*/node_modules/*' 2>/dev/null
+>   ```
+>   Run **each** match, honouring that package's `.nax/mono/<packageDir>/config.json` `acceptance.command`/`testPath` override. A feature spanning `packages/core`, `packages/backtester`, and `apps/api` yields three test files — all three must pass.
+> - If you cannot locate an acceptance test file for the feature, list where you looked (root feature dir **and** the recursive per-package search above) and ask the user for the path (or whether acceptance was generated at all) — do not silently skip.
 
 **Run them:**
 - If `acceptance.command` is set, use it (substitute the resolved file for `{{FILE}}` if the placeholder is present).
