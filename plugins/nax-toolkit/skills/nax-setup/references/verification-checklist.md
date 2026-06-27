@@ -68,12 +68,23 @@ No command may reference a script/binary/target that does not exist. **Also conf
 - Single repo: confirm NO `.nax/mono/` directory was created and NO orchestrator command (`turbo`/`nx`) appears in the config.
 - Monorepo: confirm one `.nax/mono/<pkg>/config.json` per real member package.
 
-## 7. Clean commit (always)
+## 7. Ignore files present (always)
+
+```bash
+grep -q '# nax — generated files' .gitignore && echo "gitignore nax section OK"
+grep -qxF '.nax/' .naxignore && echo ".naxignore OK"
+# guard against the blanket mistake — `.nax/` alone must NOT be a git-ignored line
+grep -nxF '.nax/' .gitignore && echo "WARN: blanket .nax/ in .gitignore untracks config+specs"
+```
+
+Confirm the `.gitignore` nax section is present (not the whole `.nax/` tree) and `.naxignore` starts with `.nax/`. See `ignore-files.md`.
+
+## 8. Clean commit (always)
 
 ```bash
 git status --short            # inspect index — there may be unrelated pre-staged work
 git reset -q                  # unstage everything, then stage ONLY nax files
-git add .nax/config.json .nax/mono/ constitution.md context.md   # the nax files you wrote
+git add .nax/config.json .nax/mono/ constitution.md context.md .gitignore .naxignore   # the nax files you wrote
 # JS/TS only, if you added parity scripts/tasks: also git add package.json turbo.json packages/*/package.json
 git diff --cached --stat      # confirm scope before committing
 ```

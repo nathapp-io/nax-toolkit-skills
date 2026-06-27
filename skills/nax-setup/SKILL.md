@@ -1,6 +1,6 @@
 ---
 name: nax-setup
-description: Set up nax in any repo, in any language — single-package OR monorepo. Wires .nax/config.json (quality, review, context, precheck, execution) to the repo's REAL build/test/lint/typecheck commands, resolving each from the detected language's own toolchain (npm/pnpm/yarn/bun scripts for JS/TS, pytest/mypy/ruff or uv/poetry for Python, go build/test/vet for Go, cargo for Rust, make targets where used). Adds per-package .nax/mono/<pkg>/config.json overrides ONLY when the repo is a workspace monorepo. Use when a user asks to "set up nax", "configure nax for this repo/project", "add nax", or to port a working nax setup from one repo to another.
+description: Set up nax in any repo, in any language — single-package OR monorepo. Wires .nax/config.json (quality, review, context, precheck, execution) to the repo's REAL build/test/lint/typecheck commands, resolving each from the detected language's own toolchain (npm/pnpm/yarn/bun scripts for JS/TS, pytest/mypy/ruff or uv/poetry for Python, go build/test/vet for Go, cargo for Rust, make targets where used). Adds per-package .nax/mono/<pkg>/config.json overrides ONLY when the repo is a workspace monorepo. Also writes the nax .gitignore section and a .naxignore so generated runtime artifacts stay out of git and out of the context engine. Use when a user asks to "set up nax", "configure nax for this repo/project", "add nax", or to port a working nax setup from one repo to another.
 ---
 
 # nax Setup
@@ -65,7 +65,14 @@ For each member package, create `.nax/mono/<relative-pkg-path>/config.json`. **D
 
 Keep them if already tailored to the repo; otherwise scaffold real, project-specific content (architecture rules, coding standards, testing requirements, forbidden patterns; quick-reference commands; dependency order for monorepos). Use the repo's actual language and idioms — not TS boilerplate in a Go repo.
 
-### 8. Verify before claiming done (mandatory)
+### 8. Ignore files — `.gitignore` + `.naxignore` (always)
+
+nax writes generated runtime artifacts into the repo; keep them out of git, and keep nax's own tree out of the context engine. **Two separate files, both written here** — see `references/ignore-files.md` for the canonical entries and an idempotent apply snippet:
+
+- **`.gitignore`** — append nax's `# nax — generated files` section (run logs, status, plans, session state, metrics, generated acceptance tests) **idempotently** (only lines not already present, so a prior `nax init` or a re-run never duplicates). Keep `.nax/config.json`, specs, `constitution.md`, `context.md` **tracked** — never blanket-ignore `.nax/`.
+- **`.naxignore`** — context-engine suppression, **not** git. Always start with `.nax/`, then add the repo's heavy / generated / non-code top-level dirs (build output, deps/envs, caches, `docs/`, `examples/`, `scripts/`, …) so they don't dilute context. Monorepo: add a per-package `.naxignore` only when a package has heavy dirs the root file misses.
+
+### 9. Verify before claiming done (mandatory)
 
 Run `references/verification-checklist.md`. At minimum: validate every JSON file; for monorepos confirm the orchestrator (or workspace command) resolves each task; **run ONE real gate end-to-end in the repo's own language and confirm exit 0**; re-read every nax command and confirm it resolves to a real script/target/toolchain-subcommand/binary. Never report success on config alone.
 
@@ -78,4 +85,7 @@ Run `references/verification-checklist.md`. At minimum: validate every JSON file
 - **Output-format mismatch** — leaving `lintOutput.format`/`typecheckOutput.format` on `"auto"` for Go/Rust/Python makes nax try to parse golangci/clippy/ruff/mypy output as ESLint/tsc JSON. Set `"text"`.
 - **Missing env-manager prefix** — bare `pytest` in a `uv`/`poetry` repo can fail "command not found"; use `uv run pytest`.
 - **Setting `test` to `build`** (tests never run); copying a bun config into an npm repo (`bunx`→fails).
+- **Blanket-ignoring `.nax/` in `.gitignore`** — that untracks `config.json` and specs you want committed. Ignore only the generated artifacts (`references/ignore-files.md`), not the whole tree.
+- **Skipping the ignore files** — manual setup never runs `nax init`, so nothing writes the `.gitignore` nax section or the `.naxignore`. Write both in step 8; don't assume `nax init` did it.
+- **Running `nax init` / `nax init --force` to shortcut setup** — `--force` overwrites the hand-tailored `constitution.md` and `context.md` from step 7 (it spares an existing `config.json`, but not those). Write the `.gitignore` section manually (step 8); never reach for the CLI here.
 - **Committing unrelated pre-staged changes** — inspect the index; stage only nax files.
