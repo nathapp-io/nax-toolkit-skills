@@ -1,6 +1,6 @@
 ---
 name: nax-finish
-description: Finalize a completed nax feature through to an opened MR/PR. Resolves the feature's spec from .nax/features/<name>/spec.md, .nax/specs/, docs/specs/, or the prd.json fallback (asks if none resolves), and short-circuits if the branch is already merged. Reads the nax config (root plus per-package .nax/mono/<pkg>/config.json) for the repo's real quality commands (build/typecheck/lint/test) and acceptance command, drives the changed feature's acceptance tests to green first, runs post-impl-review in two phases (spec review, then code-quality on stabilized diff) in isolated subagents, triaging each phase's findings with the user and fixing approved ones, runs the repo-root quality gates to green, then — on explicit approval — detects GitHub vs GitLab, fills any PR/MR template, summarizes the spec as the body, and opens it with gh/glab. Use after a nax run implements a feature and you want to review, verify, and ship it — triggers include "finish this nax feature", "wrap up the nax run", "/nax-finish <feature>".
+description: Finalize a completed nax feature through to an opened MR/PR. Resolves the feature's spec from .nax/features/<name>/spec.md, .nax/specs/, docs/specs/, or the prd.json fallback (asks if none resolves), and short-circuits if the branch is already merged. Reads the nax config (root plus per-package .nax/mono/<pkg>/config.json) for the repo's real quality commands (build/typecheck/lint/test) and acceptance command, drives the changed feature's acceptance tests to green first, runs post-impl-review in two phases (spec review, then code-quality on stabilized diff) in isolated subagents, triaging each phase's findings with the user and fixing approved ones, runs the repo-root quality gates to green, then — on explicit approval — opens a PR/MR with gh/glab, or promotes to ready the draft nax autoPR may already have opened (never a duplicate). Use after a nax run implements a feature and you want to review, verify, and ship it — triggers include "finish this nax feature", "wrap up the nax run", "/nax-finish <feature>".
 ---
 
 # nax-finish
@@ -192,17 +192,19 @@ Quality (repo root):
   build      (skipped — not configured)
 ```
 
-## Step 7: Open the MR/PR (only on explicit approval)
+## Step 7: Open or promote the MR/PR (only on explicit approval)
 
-Now everything is green. Prepare the PR/MR, show it to the user, and open it **only after the user explicitly approves**.
+Now everything is green. Prepare the PR/MR, then either **open a new one** or **promote the existing draft to ready** — **only after the user explicitly approves**. nax's **autoPR** may already have opened a PR/MR for the branch (draft or ready) during the run, so this step **detects first** and never blindly creates.
 
-**Full mechanics live in `references/open-pr-mr.md`** — read it now and follow it. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e show the full title + body and open **only on explicit approval** (leave the branch pushed if cancelled).
+**Full mechanics live in `references/open-pr-mr.md`** — read it now and follow it. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e **detect whether a PR/MR already exists for the branch** and branch on it, 7f create a new one on approval (only when none exists), 7g promote an existing **draft → ready** on approval (leaving its autoPR body intact by default; a body refresh is offered, not forced). If a PR/MR already exists **and is already ready**, report its URL and stop — nothing to open. Leave the branch pushed if the user cancels.
 
 ## Final summary
 
-Close with a one-line verdict the user can scan:
+Close with a one-line verdict the user can scan — reflect what actually happened to the PR/MR (opened new, promoted draft→ready, or already ready):
 ```
 nax-finish: <feature> — acceptance PASS · review ALIGNED · quality PASS · MR opened: <url>
+nax-finish: <feature> — acceptance PASS · review ALIGNED · quality PASS · MR promoted to ready: <url>
+nax-finish: <feature> — acceptance PASS · review ALIGNED · quality PASS · MR already ready: <url>
 ```
 If any gate was waived by the user, say so explicitly in the summary rather than implying a clean pass.
 
@@ -223,7 +225,9 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Applying review/fix changes without asking | Every fix needs explicit user approval (Steps 3, 5, 6) |
 | Not re-checking acceptance after a review fix | A fix can break the contract — re-run the feature's acceptance tests (Step 5) |
 | Re-running the full post-impl-review phase after every small fix | Scale verification to the fix: skip for waived/LOW-only, one targeted subagent for bounded fixes, full same-phase re-run only for broad/structural changes (Step 5) |
-| Opening the PR/MR automatically | Show body, open **only** on explicit approval (Step 7e) |
+| Opening the PR/MR automatically | Show body, open/promote **only** on explicit approval (Step 7f/7g) |
+| Blindly `gh pr create` / `glab mr create` when nax autoPR already opened one | Detect first (7e); create only if none exists, promote draft→ready if a draft exists, report-and-stop if already ready (Step 7e–7g) |
+| Overwriting the autoPR body when promoting a draft | Leave the existing body intact by default; offer a spec-body refresh, apply only on explicit approval (Step 7g) |
 | Pushing to `main`/`master` | Branch first (Step 7b) |
 | Claiming a clean pass after waiving a finding | State waived findings in the body and final summary |
 | Advancing past a red gate | Each gate is blocking unless the user explicitly waives it |
