@@ -221,6 +221,7 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Reviewing before the feature passes its own tests | Acceptance is the fail-fast gate — run it before review (Steps 3 → 4) |
 | Running code-quality review before the spec drift is fixed | Review is phased: `--phase spec` → fix the drift → `--phase quality` on the stabilized diff, so quality never judges code about to be rewritten (Steps 4–5) |
 | Dispatching the review subagent yourself, or fanning out one review per package | Just invoke the `post-impl-review` skill — it owns its dispatch and runs one isolated subagent over the whole diff (holistic integration findings); don't wrap it in your own Task call (Step 4) |
+| Scheduling a wakeup / polling / sleeping to "wait" for the review worker | The review call returns its findings inline; if the runtime backgrounds the worker, await its completion notification instead. Never call a wait/wakeup/poll/sleep tool to wait (that path errors, e.g. a wakeup with no prompt) (Step 4) |
 | Looping per-package quality in a monorepo | Run the **root** `quality.commands` once — they fan out via the orchestrator (Step 6) |
 | Applying review/fix changes without asking | Every fix needs explicit user approval (Steps 3, 5, 6) |
 | Not re-checking acceptance after a review fix | A fix can break the contract — re-run the feature's acceptance tests (Step 5) |
