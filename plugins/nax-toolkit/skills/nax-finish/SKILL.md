@@ -105,21 +105,51 @@ Run this **before** the review: it's the cheap, deterministic proof that the fea
 }
 ```
 
+> **⚠️ The group's fields are in two different reference frames — and the JSON has no `cwd` field.**
+> `packageDir`/`testPath` are **repo-root-relative**, but `command` comes verbatim from that package's `.nax/mono/<packageDir>/config.json` and is authored **package-relative** — e.g. `bun vitest run --config .nax/vitest.acceptance.config.ts {{FILE}}`, where `.nax/…` means `<packageDir>/.nax/…`, **not** the root `.nax/`. So pasting `command` with the root-relative `testPath` and running it from `repoRoot` does **not** reproduce what nax does.
+>
+> **This fails per-group, not uniformly — and usually only for the minority. That is the trap.** Groups that inherit the **root** `command` with no package-relative paths and no package-local runner (e.g. `uv run pytest {{FILE}}`) pass from `repoRoot` — so a feature spanning six packages can go **5-for-5 green** from the wrong cwd, then fail on the single group with a per-package `command` override (`bun vitest --config .nax/…`). Only the overriding group is position-sensitive.
+>
+> That lopsided score is what makes this misdiagnose so reliably: by the time the odd group fails, the root cwd has been "confirmed" five times, so the error reads as *"this package's test/config is missing"* rather than *"I'm in the wrong directory."* **Green from `repoRoot` is not evidence the approach is right — the passing groups are the ones that can't detect the mistake.** The nax runtime spawns **every** group with `cwd = <repoRoot>/<packageDir>` and an **absolute** `{{FILE}}`; **Run them** mirrors that exactly. Reproduce the runtime uniformly — never generalize from whichever groups happened to pass.
+
 Branch on `acceptance.status`:
 - **`disabled`** → print `Acceptance disabled in config — skipping.` and go to Step 4.
 - **`no-prd`** → no `prd.json` resolved for the feature; acceptance targets can't be computed. List the feature dir checked and ask the user for the acceptance test path (or whether acceptance was generated at all) — do not silently skip.
-- **`ok`** → run **each** group whose `exists` is `true`. Use that group's `command` (substitute the group's `testPath` for `{{FILE}}` if the placeholder is present); if `command` is absent, fall back to the language-native runner per **Run them** below, matched to the group's `language`. A feature spanning `apps/api` + `apps/cli` yields two groups — **all** existing groups must pass. If a group has `exists: false`, its test file was expected (canonical path) but never generated — surface that to the user rather than skipping silently.
+- **`ok`** → run **each** group whose `exists` is `true`, per **Run them** below. A feature spanning `apps/api` + `apps/web` yields two groups — **all** existing groups must pass, and each runs in **its own** `packageDir` with **its own** `command`/`language` (the two groups routinely use different runners: `uv run pytest` in `apps/api`, `bun vitest` in `apps/web`). If a group has `exists: false`, its test file was expected (canonical path) but never generated — surface that to the user rather than skipping silently.
 
 > **Fallback (older nax — no `acceptance` block in the resolve output).** If the Step 1 output lacks an `acceptance` field (older nax `features resolve`, or you used the manual Step 1 fallback), resolve the acceptance target(s) by hand per the **Step 3 fallback** in `references/older-nax-fallback.md` — it covers the single-package path, the per-package monorepo search, and the not-found prompt. Then run them as below.
 
-**Run them:**
-- If `acceptance.command` is set, use it (substitute the resolved file for `{{FILE}}` if the placeholder is present).
-- Otherwise run the repo's test runner against the resolved file(s). Use `quality.commands.test`'s runner where it's a per-file-capable runner; otherwise the language-native runner (e.g. `bun test <file>`, `pytest <file>`, `go test <pkg>`). Match the runner to the file's language, never assume `bun`.
+**Run them:** for **each** group, reproduce what the nax runtime does — two rules, both mandatory:
 
-The run must be **green**. If it fails:
+1. **cwd = `<repoRoot>/<packageDir>`** (`packageDir: ""` → `repoRoot`, the root package's legitimate cwd). Never run a group with a **non-empty** `packageDir` from `repoRoot`.
+2. **`{{FILE}}` = the absolute path** `<repoRoot>/<testPath>`.
+
+```bash
+# Set repoRoot once (Step 2 already located it), then per group:
+#   packageDir="apps/web"  testPath="apps/web/.nax/features/<f>/.nax-acceptance.test.tsx"
+repoRoot="$(pwd)"   # or the dir containing .nax/ — must be absolute and non-empty
+( cd "$repoRoot/apps/web" && bun vitest run --config .nax/vitest.acceptance.config.ts \
+    "$repoRoot/apps/web/.nax/features/<f>/.nax-acceptance.test.tsx" )
+```
+- If the group's `command` is set, use it, substituting the absolute file for `{{FILE}}` (nax also accepts `{{file}}`/`{{files}}`) — otherwise run it **as-is**; its relative paths are already correct once cwd is the package dir. Don't "fix" a `--config .nax/…` path by prefixing `packageDir` — that breaks it.
+- If `command` is absent, use `quality.commands.test`'s runner **for that group's package** where it's per-file-capable; otherwise the language-native runner matched to the group's `language` (`bun test <file>`, `uv run pytest <file>`, `go test <pkg>`). Never assume `bun`, and never infer the runner from the **root** `project.language` — on a monorepo it often differs from the package's (a root `project.language: "python"` alongside a TypeScript `apps/web` is common). Trust the group's own `language`.
+
+**A resolution error is NOT a missing test and NOT a pass.** With the wrong cwd these commands fail in ways that read like the test or config is absent — every one of these means *you ran it from the wrong directory*, so fix the cwd and re-run rather than reporting the file doesn't exist, "fixing" the config, or skipping the group:
+
+| Symptom | Real cause |
+|---|---|
+| `No test files found` (vitest/jest) | The `{{FILE}}` filter matched nothing: a root-relative path (`apps/web/.nax/…`) can't match under a package cwd, where the file is `.nax/…`. Pass the **absolute** path. |
+| `Script not found "vitest"` / `command not found` | Ran from `repoRoot`; the runner is a **package** dependency, not a root one |
+| `Cannot find … .nax/vitest.acceptance.config.ts` / `config not exist` | Ran from `repoRoot`, so the command's package-relative `.nax/` resolved against the **root** `.nax/`. The config really does live at `<packageDir>/.nax/` |
+| `file or directory not found: <testPath>` (pytest) | Root-relative `{{FILE}}` passed under a package cwd — pass the **absolute** path |
+
+If a group's test file genuinely doesn't exist, the resolve output already says `exists: false` — trust that field over any runner error. When in doubt, confirm with `ls "$repoRoot/<testPath>"` before claiming it's missing.
+
+The run must be **green** for every group. If it fails:
 1. Show the failure output.
-2. Treat it as a real defect in the changed feature. Propose a fix, apply it **with user approval** (the same approval discipline as Step 5), and re-run.
-3. Loop until green. Do not advance while acceptance is red unless the user explicitly waives it.
+2. **First rule out the cwd/path errors above** — a resolution failure is a harness mistake, not a defect; fix it and re-run before touching any code.
+3. Otherwise treat it as a real defect in the changed feature. Propose a fix, apply it **with user approval** (the same approval discipline as Step 5), and re-run.
+4. Loop until green. Do not advance while acceptance is red unless the user explicitly waives it.
 
 Print `Acceptance: PASS (<feature> — N tests)` when green.
 
@@ -217,6 +247,10 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Running the whole acceptance suite | Scope to the changed feature's acceptance file(s) (Step 3) |
 | Detecting monorepo with `ls .nax/mono/*/config.json` | Use `find .nax/mono -name config.json` (configs nest deeper) and trust `project.type: "monorepo"` (Step 2) |
 | Looking for the acceptance test only in the root `.nax/features/<name>/` on a monorepo | It lives per-package at `<packageDir>/.nax/features/<name>/<testPath>`; `find -path '*/.nax/features/<name>/<testPath>'` to get all of them (Step 3) |
+| Running a group's `command` from `repoRoot` | Its paths (`--config .nax/…`) are **package-relative**; spawn with `cwd = <repoRoot>/<packageDir>`, as the nax runtime does (Step 3) |
+| Substituting the root-relative `testPath` into `{{FILE}}` | `{{FILE}}` is the **absolute** `<repoRoot>/<testPath>` — root-relative under a package cwd yields `No test files found` (Step 3) |
+| Reading `No test files found` / `config not exist` as "no acceptance test" and skipping | That's a wrong-cwd error, not a missing file — trust the group's `exists` field and re-run from `packageDir` (Step 3) |
+| Assuming one runner for every group | Each group has its own `language`/`command` — `apps/api` may be `uv run pytest` while `apps/web` is `bun vitest` (Step 3) |
 | Applying acceptance/review/quality fixes but never committing them — PR ships the unfixed code | Treat Step 7b as the reconciliation point: `git status --porcelain` before push catches both nax-leftover and your-own-uncommitted fixes; commit (with approval) or explicitly leave out (Step 7b) |
 | Reviewing before the feature passes its own tests | Acceptance is the fail-fast gate — run it before review (Steps 3 → 4) |
 | Running code-quality review before the spec drift is fixed | Review is phased: `--phase spec` → fix the drift → `--phase quality` on the stabilized diff, so quality never judges code about to be rewritten (Steps 4–5) |
