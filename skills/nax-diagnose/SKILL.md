@@ -216,6 +216,8 @@ Flag issues:
 [WARN] 3 advisory findings dropped (blockingThreshold: error) — may hide real issues
 ```
 
+> Cross-run telemetry: to review adversarial **recurrence-demotion** across many runs — findings tagged `advisoryFindings[].meta.coverageGap` (auto-demoted after recurring past `maxBlockingRounds`) — use the **nax-coverage-gap** skill. That is cross-run telemetry (is demotion dropping real bugs?), distinct from this skill's single-run failure RCA.
+
 ---
 
 ## Step 9: Print diagnosis report
