@@ -61,7 +61,7 @@ Before running anything, learn what *this* repo runs. Never hardcode `bun test` 
 cat .nax/config.json 2>/dev/null
 ```
 Extract:
-- `quality.commands` → `build`, `typecheck`, `lint`, `test` (the **unscoped** variants — Step 6 runs the whole repo, not a scoped subset). Also note `quality.requireTypecheck` / `requireLint` / `requireTests` (default `true`) — a gate whose `require*` flag is `false` or whose command is unset is **skipped**, not failed.
+- `quality.commands` → `build`, `typecheck`, `lint`, `test` (the **unscoped** variants — Step 6 runs the whole repo, not a scoped subset). A gate whose command is unset is **skipped**, not failed — an unset command is the only way a gate is off. (`quality.requireTypecheck` / `requireLint` / `requireTests` no longer exist; nax rejects them at parse time, so no config you read will carry one.)
 - `acceptance.enabled` (default `true`), `acceptance.command` (optional explicit runner, may contain a `{{FILE}}` placeholder), `acceptance.testPath` (default filename, e.g. `.nax-acceptance.test.ts`).
 - `project.language` if present (drives the acceptance test-file extension).
 - `project.type` if present — `"monorepo"` is the **authoritative** monorepo signal; trust it over any directory probe.
@@ -201,7 +201,7 @@ Do not advance to Step 6 while a CRITICAL or HIGH finding is open and unaddresse
 
 Run the **repo-root** quality commands — every gate that is configured *and* required — from `repoRoot`, regardless of whether the repo is single-package or a monorepo:
 
-For each of `build`, `typecheck`, `lint`, `test`, `format` (skip `build` if unset; skip `typecheck`/`lint`/`test` when its `require*` flag is `false` or its command is unset; run `format` — the check variant, e.g. `ruff format --check` — whenever `quality.commands.format` is set, since nax enforces it as a quality gate):
+For each of `build`, `typecheck`, `lint`, `test`, `format` — skipping any whose command is unset, which is the only way a gate is off. Run `format` (the check variant, e.g. `ruff format --check`) whenever `quality.commands.format` is set: nax's own schema has no `format` gate, but the `nax-finish` autoflow runs it, so a repo that configures one expects it enforced here too:
 ```bash
 <the exact command string from quality.commands.<gate>>
 ```
