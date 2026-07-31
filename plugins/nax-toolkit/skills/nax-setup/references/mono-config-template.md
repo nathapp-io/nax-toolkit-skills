@@ -42,7 +42,6 @@ A Go package in the same monorepo. No `<pm>`, no `typecheck` gate, `text`/`none`
 ```jsonc
 {
   "quality": {
-    "requireTypecheck": false,
     "commands": {
       "build": "go build ./...",
       "test": "go test ./...",

@@ -8,16 +8,15 @@ Notation: `<pm>` = JS package-manager run prefix (`bun run`/`npm run`/`pnpm run`
 
 ## A. Single-package repo (no orchestrator, no mono configs)
 
-Commands call the language's toolchain/scripts directly. This is the whole setup — there is no `.nax/mono/`. The skeleton below is language-neutral; **fill `quality.commands`, `requireTypecheck`, the `*Output.format` knobs, `review.checks`/`commands`, and `testFilePatterns` from the language matrix.**
+Commands call the language's toolchain/scripts directly. This is the whole setup — there is no `.nax/mono/`. The skeleton below is language-neutral; **fill `quality.commands` (and leave unset the gates the language has none for), the `*Output.format` knobs, `review.checks`/`commands`, and `testFilePatterns` from the language matrix.**
+
+> Never write `quality.requireTypecheck` / `requireLint` / `requireTests` — they were removed from nax and are rejected at parse time. A gate is disabled by having no command.
 
 ```jsonc
 {
   "name": "<repo-name>",
   "version": 1,
   "quality": {
-    "requireTypecheck": true,        // matrix: false for Go/Rust/JS and untyped Python
-    "requireLint": true,
-    "requireTests": true,
     "commands": {
       // fill ONLY the gates that exist for this language; omit the rest
       "test": "<from matrix>",
@@ -57,7 +56,6 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
 **TypeScript (npm, jest):**
 ```jsonc
 "quality": {
-  "requireTypecheck": true, "requireLint": true, "requireTests": true,
   "commands": {
     "test": "npm run test", "testScoped": "npm run test",
     "typecheck": "npm run type-check", "lint": "npm run lint",
@@ -73,7 +71,6 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
 **Go (single module, golangci-lint):** no `typecheck` gate; build IS the typecheck; vet folds into lint.
 ```jsonc
 "quality": {
-  "requireTypecheck": false, "requireLint": true, "requireTests": true,
   "commands": {
     "test": "go test ./...", "testScoped": "go test ./...",
     "lint": "golangci-lint run", "lintFix": "golangci-lint run --fix", "formatFix": "gofmt -w ."
@@ -88,7 +85,6 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
 **Python (uv, pytest, mypy, ruff):** prefer the `uv run` prefix; no build gate for a source-run lib.
 ```jsonc
 "quality": {
-  "requireTypecheck": true, "requireLint": true, "requireTests": true,
   "commands": {
     "test": "uv run pytest", "testScoped": "uv run pytest {{files}}",
     "typecheck": "uv run mypy src", "lint": "uv run ruff check",
@@ -104,7 +100,6 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
 **Rust (cargo):** build/check IS the typecheck; clippy is lint.
 ```jsonc
 "quality": {
-  "requireTypecheck": false, "requireLint": true, "requireTests": true,
   "commands": {
     "test": "cargo test", "testScoped": "cargo test",
     "lint": "cargo clippy", "lintFix": "cargo clippy --fix --allow-dirty --allow-staged", "formatFix": "cargo fmt"
@@ -127,9 +122,6 @@ Root commands drive the workspace. **JS/TS:** prefer root passthrough scripts ov
   "name": "<repo-name>",
   "version": 1,
   "quality": {
-    "requireTypecheck": true,        // root flag; per-package overrides may differ
-    "requireLint": true,
-    "requireTests": true,
     "commands": {
       "test": "<pm> run test",                          // JS/turbo; or "go test ./..." / "cargo test --workspace"
       "testScoped": "<pm> run test -- --filter=[HEAD^1]",   // turbo; nx uses the affected form
@@ -174,9 +166,6 @@ When you must NOT add scripts. Wire only commands that already exist; turn off g
   "name": "<repo-name>",
   "version": 1,
   "quality": {
-    "requireTypecheck": false,
-    "requireLint": true,
-    "requireTests": true,
     "commands": { "test": "<test cmd>", "lint": "<lint cmd>" }
   },
   "review": {

@@ -12,7 +12,7 @@
     {
       "name": "nax-toolkit",
       "description": "A toolkit of operational skills for nax projects. Bundles nax-setup (wire .nax/config.json to a repo's real build/test/lint commands, single-package or monorepo).",
-      "version": "0.2.15",
+      "version": "0.2.16",
       "source": {
         "source": "local",
         "path": "./plugins/nax-toolkit"

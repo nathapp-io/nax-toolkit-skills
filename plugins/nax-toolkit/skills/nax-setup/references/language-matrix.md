@@ -45,17 +45,21 @@ Fill `quality.commands.*` and `review.commands.*` from the row for the detected 
 
 **Rule:** if a language has no clean per-file scoped form (Go, Rust), set `testScoped` equal to `test` rather than inventing a path-based command that the toolchain can't honor. Over-running is correct; a broken scoped command is not.
 
-### Gate on/off flags (set these from the row, do not leave defaults)
+### Turning a gate off (omit the command — there is no flag)
 
-`quality.requireTypecheck` **defaults to `true`** in the schema — wrong for most non-TS repos. Set it explicitly:
+A quality gate runs if and only if its command resolves. To disable one, **leave `quality.commands.<gate>` unset**.
 
-| Language | `requireTypecheck` | Rationale |
+> `quality.requireTypecheck` / `requireLint` / `requireTests` were removed from nax and are **rejected at config-parse time** (`CONFIG_DEAD_QUALITY_FLAGS`), in the root config *and* in `.nax/mono/<pkg>/config.json`. A config carrying one makes every `nax` command fail immediately. Never write them.
+
+Whether to set `quality.commands.typecheck` at all:
+
+| Language | Set `commands.typecheck`? | Rationale |
 |:--|:--|:--|
-| TypeScript | `true` | `tsc` is a real, separate gate. |
-| JavaScript | `false` | No typechecker (unless the repo opts into `tsc --checkJs`/`jsconfig`). |
-| Python | `true` only if **mypy/pyright is actually configured**, else `false` | Many Python repos have no typechecker. |
-| Go | `false` | The compiler typechecks; express it as the `build` gate, not `typecheck`. |
-| Rust | `false` | Same — `cargo build`/`cargo check` is the typecheck. |
+| TypeScript | Yes | `tsc` is a real, separate gate. |
+| JavaScript | No | No typechecker (unless the repo opts into `tsc --checkJs`/`jsconfig`). |
+| Python | Only if **mypy/pyright is actually configured** | Many Python repos have no typechecker. |
+| Go | No | The compiler typechecks; express it as the `build` review check, not `typecheck`. |
+| Rust | No | Same — `cargo build`/`cargo check` is the typecheck. |
 
 For `go vet` / `cargo clippy`-style static analysis: there is **no `vet` gate** in nax's vocabulary (`test, typecheck, lint, build` only). Fold it into `lint` — `golangci-lint run` already runs vet-class analyzers; if you want raw vet too, use `lint: "go vet ./... && golangci-lint run"`.
 
@@ -97,4 +101,4 @@ nax parses lint/typecheck output. The format knobs default to `"auto"`, which as
 
 ## "Full parity" — language-specific meaning
 
-The "add missing scripts for full parity" step is a **JS-only** concept (you add `type-check` / `lint:fix` scripts to `package.json`). For Go/Rust/Python there are **no scripts to add** — the toolchain commands already exist; you simply wire nax to them (or to `make` targets if the repo standardizes on a Makefile). If a non-JS repo has *no* linter/typechecker configured at all, that is a real gap: either turn the gate off (`requireLint:false` / `requireTypecheck:false`) or, with the user's agreement, add the tool (e.g. introduce `ruff`/`golangci-lint`). Never wire a gate to a command that does not resolve.
+The "add missing scripts for full parity" step is a **JS-only** concept (you add `type-check` / `lint:fix` scripts to `package.json`). For Go/Rust/Python there are **no scripts to add** — the toolchain commands already exist; you simply wire nax to them (or to `make` targets if the repo standardizes on a Makefile). If a non-JS repo has *no* linter/typechecker configured at all, that is a real gap: either turn the gate off (leave `quality.commands.lint` / `quality.commands.typecheck` unset) or, with the user's agreement, add the tool (e.g. introduce `ruff`/`golangci-lint`). Never wire a gate to a command that does not resolve.
