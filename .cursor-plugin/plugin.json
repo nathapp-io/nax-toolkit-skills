@@ -2,7 +2,7 @@
   "name": "nax-toolkit",
   "displayName": "nax-toolkit",
   "description": "A toolkit of operational skills for nax projects. Currently bundles nax-setup (config wiring for single-package or monorepo).",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "author": {
     "name": "William Khoo",
     "email": "william_khoo@outlook.com"
