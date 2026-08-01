@@ -1,6 +1,6 @@
 {
   "name": "nax-toolkit",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "description": "A toolkit of operational skills for nax projects (currently nax-setup) for coding agents.",
   "type": "module",
   "main": ".opencode/plugins/nax-toolkit.js",

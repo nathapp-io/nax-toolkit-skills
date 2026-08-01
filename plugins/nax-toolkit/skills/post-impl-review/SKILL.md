@@ -1,6 +1,6 @@
 ---
 name: post-impl-review
-description: Post-implementation code review against a feature spec. Reads the spec (.nax/features/<name>/spec.md, .nax/specs/*.md, or a given path) and diffs changed code against the default branch. Checks compliance (every AC/story covered, each covering test sound?), drift (matches the spec's approach, API shape, constraints?), integration (works against the unchanged collaborators it calls into?), convention compliance (obeys CLAUDE.md / .nax/rules / .claude/rules?), and code quality (test isolation, leaks, errors, concurrency, performance, a11y, security, design) independent of the spec. Reads unchanged callees and rule files. Applies a tiered confidence threshold (≥80% spec-relative, ≥60% grounded quality) and prints severity-graded findings with a single verdict. An optional `--phase <full|spec|quality>` (default `full`) runs only the spec-relative or only the code-quality dimensions — nax-finish reviews spec → fix → quality on the stabilized diff. Use after implementing a feature to verify it matches the spec.
+description: Review implemented code against the ONE feature spec that drove it. REQUIRES a specific known spec — the caller names it, or it belongs to the nax run/feature branch just completed (.nax/features/<name>/spec.md, .nax/specs/*.md, or a given path). Do NOT invoke when you implemented directly with no spec driving the work, when you cannot name which spec the change implements, or for ad-hoc changes (bug fix, refactor, chore) — a spec you merely found by searching docs/ is NOT this change's spec and reviewing against it yields false findings; run `--phase quality` (spec-independent) or a general code-review skill instead. Checks compliance (every AC covered, covering tests sound?), drift (approach, API shape, constraints), integration (against unchanged collaborators it calls into), conventions (CLAUDE.md / .nax/rules), and code quality (test isolation, leaks, errors, concurrency, performance, a11y, security, design). Prints severity-graded findings and one verdict. `--phase <full|spec|quality>` (default `full`).
 ---
 
 # Post-Implementation Review
@@ -8,6 +8,24 @@ description: Post-implementation code review against a feature spec. Reads the s
 Review changed code against a feature spec across five dimensions: compliance (every AC/story covered, and is each covering test actually sound?), drift (implementation deviates from spec approach, API shape, or constraints), integration (changed code works against the unchanged collaborators it calls into), convention compliance (changed code obeys the project's own rule files), and code quality (spec-independent defects and design/maintainability concerns in the changed lines — test isolation, dead code, resource leaks, error handling, concurrency, performance, accessibility, security, separation of concerns, abstraction quality, misleading names, unhandled edge cases). Report spec-relative findings at ≥80% confidence and code-quality findings at ≥60% when anchored to a changed line with a concrete cost. Print severity-graded findings to the terminal with a unified verdict.
 
 **Announce at start:** "Using post-impl-review to review implementation against `<resolved-spec-path>`."
+
+## Precondition: you must already know which spec drove this change
+
+This skill reviews a diff against **the one spec the diff was written to satisfy**. That pairing is the entire premise: Compliance, Drift and Integration all judge the changed lines against *that* spec's ACs, approach and constraints. Point it at a spec the change was **not** written from and every dimension misfires — unimplemented ACs from an unrelated feature are reported as CRITICAL "AC entirely missing", and the change's real defects go unmentioned because nothing in the spec describes them. That output is worse than no review: it is confidently wrong.
+
+So the spec must be **known before you invoke**, from exactly one of:
+
+- the caller passed an explicit spec path or feature name (`/post-impl-review <name|path>`, or `nax-finish` passing its resolved `specSource.path`), **or**
+- the work under review was a `nax run` / spec-driven implementation and the current feature branch has that spec in `.nax/features/<name>/`.
+
+**Do NOT invoke this skill when** you implemented the change directly from a conversation with no spec driving it; you cannot name which spec this change implements; the change is ad-hoc (a bug fix, a refactor, a chore) with no spec behind it; or the only spec you can find is one you turned up by searching `docs/` after resolution failed. **A spec found by searching is not evidence that it drove this change.** Absence of a driving spec is the normal case for direct implementation — it is not an error to route around.
+
+**What to do instead when there is no driving spec** — pick one and say which:
+
+- `/post-impl-review --phase quality` — the spec-independent dimension only. This is the right route for direct implementation: it reviews the same diff for defects and design/maintainability with no spec involved, and its verdict is honestly scoped to code quality. Resolution never blocks it (see Step 1).
+- A general code-review skill or agent, if the runtime offers one, for a broader unscoped review.
+
+If you were invoked anyway and no spec resolves, do not substitute a guess — follow Step 1's stop-and-ask, which never auto-accepts a fuzzy match.
 
 ## Step 0: Dispatch — resolve, fan out review worker(s), merge
 
@@ -28,7 +46,7 @@ The phased modes exist so an orchestrator (notably `nax-finish`) can run **spec 
 
 **Dispatcher procedure:**
 
-1. **Parse `--phase` and resolve the spec path.** First pull an optional `--phase <full|spec|quality>` flag out of `args` (default `full` when absent); the remaining text is the spec name/path. Then resolve the spec path using Step 1's rules, in your own context, so a "multiple specs found" prompt reaches the real user. Stop on any Step 1 error. (In `--phase quality` you still resolve the path for the header, but no worker reads the spec.)
+1. **Parse `--phase` and resolve the spec path.** First pull an optional `--phase <full|spec|quality>` flag out of `args` (default `full` when absent); the remaining text is the spec name/path. Then resolve the spec path using Step 1's rules, in your own context, so a "multiple specs found" prompt reaches the real user. Stop on any Step 1 error. **In `--phase quality`, resolution is best-effort and never blocking** — no worker reads the spec there, so if it fails or is ambiguous, skip the prompt, print `Spec: (none — quality-only review)` in the header, and continue. Never let a failed resolution in this phase push you into guessing a spec.
 2. **Detect the base branch and run the guards** (Steps 2–3) in your own context, using only `--name-only` and `--stat` (NOT the full diff content — keep your context clean). Stop on any base-branch error; print the empty-diff message and stop if nothing reviewable remains. Capture the base branch name and the stat summary for the header. Also run the one cheap rule-file check from Step 4a (`ls CLAUDE.md AGENTS.md 2>/dev/null; find .nax/rules .claude/rules -name "*.md" 2>/dev/null`) — you only need to know *whether any exist*, so you can decide the Convention-skipped header note in step 4; do not read their contents (the SPEC worker does).
 3. **Decide the fan-out — first by `--phase`, then (for `full` only) by diff size.**
    - **`--phase spec`** → dispatch **one SPEC worker** (the four spec-relative dimensions), regardless of diff size — it is a single worker either way. Use the **SPEC-worker** prompt below.
@@ -51,39 +69,57 @@ Neither the `general-purpose` SPEC worker nor the `code-reviewer` QUALITY worker
 
 `args` is the text the user typed after `/post-impl-review` when invoking the skill. For example, `/post-impl-review graphify-kb` gives `args = "graphify-kb"`, and `/post-impl-review` alone gives `args = ""`. (When `nax-finish` invokes this skill it already passes the resolved `specSource.path`, so `args` is an explicit path on that route and resolution is a single hit.) Step 0 has already stripped any `--phase <full|spec|quality>` flag out of `args` before this step runs, so here `args` is just the spec name/path.
 
+> **In `--phase quality` this whole step is best-effort.** No worker reads the spec, so nothing below may stop the run: on any failure, ambiguity, or empty/missing spec, skip the prompts and errors, record `Spec: (none — quality-only review)` for the header, skip the "read the spec in full" step at the end, and continue to Step 2. Resolve at all only to label the header — and never guess a spec to fill it.
+
 **Resolve deterministically via the nax CLI** — the same command `nax-finish` uses, so direct (`/post-impl-review <name>`) and orchestrated invocations resolve identically. This skill only needs the spec **path**; it already accepts both a markdown spec and a `prd.json` requirements source. Run:
 ```bash
 nax features resolve "<args>" --json    # <args> may be empty
 ```
 Branch on the JSON `status`:
 - **`ok`** → use `specSource.path` as the resolved spec. Print `Spec: <path> (<kind>)`.
-- **`ambiguous`** (or **`feature-not-found`** with non-empty `candidates`) → list `candidates` numbered, ask the user to pick, then re-run `nax features resolve "<pick>" --json`.
+- **`ambiguous`** (or **`feature-not-found`** with non-empty `candidates`) → list `candidates` numbered, ask the user to pick, then re-run `nax features resolve "<pick>" --json`. **Never pick for them**, and never treat "only one candidate came back" as a resolution when the query was a fuzzy one — a single fuzzy hit is still a guess.
 - **`missing`** (or **`feature-not-found`** with no candidates) → show the `checked` paths and stop, asking the user to pass a path or feature name: `/post-impl-review <name|path>`.
 - **`not-a-nax-repo`** → print `Error: no .nax/ directory found — is this a nax repo?` and stop.
 
+**Resolution failure is a stop, not a search.** When resolution fails or is ambiguous, the correct move is to stop and ask — never to go hunting through `docs/`, `README`s, issue text or recent commits for something spec-shaped and review against it. Whatever you find that way is a spec you *located*, not the spec that *drove this diff*; see the Precondition above for why reviewing against it is worse than not reviewing at all. When you stop, offer the two real routes:
+
+```
+Error: no spec resolved for "<args>". Checked:
+  <checked paths>
+
+post-impl-review reviews a diff against the specific spec that drove it, so it
+needs that spec named. Either:
+  - re-run with the spec:      /post-impl-review <name|path>
+  - or, if no spec drove this change (direct implementation, bug fix, refactor),
+    run the spec-independent pass instead:  /post-impl-review --phase quality
+```
+
 **Availability + fallback.** `nax features resolve` is available when its stdout is valid JSON carrying a `status` (exit `0` = `ok`, exit `2` = needs-human — both still emit JSON). It is **unavailable** on an older nax — stdout isn't JSON, or stderr shows `unknown command`. If unavailable, use the **Fallback** below; it mirrors the CLI's 4-tier algorithm exactly, so the result matches what `nax-finish` would resolve.
 
-> **Fallback (older nax without `features resolve`)** — resolve by hand; first existing wins.
+> **Fallback (older nax without `features resolve`)** — resolve by hand; first existing **exact** path wins. Every tier below is an exact-path lookup; nothing here fuzzy-matches its way to a spec. If no tier hits, stop — do not widen the search.
 >
 > **If `args` looks like a path** (starts with `./`, `/`, or `~`, contains a `/`, or ends in `.md`/`.json`): use it directly as the spec source — markdown for a `.md`, PRD for a `prd.json` (the path `nax-finish` passes when it invokes this skill). If it doesn't exist, print `Error: spec not found at <path>` and stop.
 >
 > **If `args` is a plain name** (no slashes, no `.md`), search in this order:
 > 1. `.nax/features/<name>/spec.md` — markdown
 > 2. `.nax/specs/<name>.md` — markdown
-> 3. `docs/specs/SPEC-<name>.md`, else the first match of `docs/specs/*<name>*.md` — markdown
+> 3. `docs/specs/SPEC-<name>.md` — markdown. **Exact filename only.** If that exact path does not exist, you may *list* `docs/specs/*<name>*.md` as candidates, but **never auto-accept a match** — not even a single one: a glob hit means a filename shares a substring with your query, which is not evidence it drove this diff. Print the candidates and ask the user to pick.
 > 4. `.nax/features/<name>/prd.json` — PRD fallback
 > ```bash
 > ls .nax/features/<name>/spec.md .nax/specs/<name>.md docs/specs/SPEC-<name>.md 2>/dev/null
-> ls docs/specs/*<name>*.md 2>/dev/null
+> ls docs/specs/*<name>*.md 2>/dev/null   # candidates to OFFER only — never auto-accept
 > ls .nax/features/<name>/prd.json 2>/dev/null
 > ```
-> If none exist, print error and stop:
+> If none exist, print error and stop — offering the same two routes as the CLI path above:
 > ```
 > Error: no spec found for "<name>". Checked:
 >   .nax/features/<name>/spec.md
 >   .nax/specs/<name>.md
->   docs/specs/SPEC-<name>.md  (and docs/specs/*<name>*.md)
+>   docs/specs/SPEC-<name>.md
 >   .nax/features/<name>/prd.json
+>
+> Re-run with the spec: /post-impl-review <name|path>
+> Or, if no spec drove this change: /post-impl-review --phase quality
 > ```
 >
 > **If `args` is empty**, discover candidates, then resolve the chosen one via the ordered search above:
@@ -91,16 +127,17 @@ Branch on the JSON `status`:
 > find .nax/features -maxdepth 2 -name prd.json 2>/dev/null
 > find .nax/features -maxdepth 2 -name spec.md 2>/dev/null
 > ```
-> Exactly one → use it. Multiple → list numbered and ask the user to pick. None → print error and stop, asking for a path or feature name.
+> Multiple → list numbered and ask the user to pick. None → print error and stop with the two-route message above. **Exactly one → still confirm it drove *this* change before using it**, because a repo can hold a stale feature dir from unrelated earlier work. It is safe to use unstated only when it corroborates against the current change — the branch name matches the feature name, or that feature's `.nax/features/<name>/` files appear in the branch's commits. With no corroboration, name it and ask (`Found only .nax/features/<name>/ — did that spec drive this change?`) rather than assuming.
 
 Once resolved, print: `Spec: <resolved-path>`
 
-Read the spec source in full before continuing (the `.md` body, or the `prd.json` stories+ACs).
+Read the spec source in full before continuing (the `.md` body, or the `prd.json` stories+ACs) — except in `--phase quality`, which reads no spec at all.
 
-If a resolved markdown spec exists but is empty, print an error and stop:
+If a resolved markdown spec exists but is empty, print an error and stop (in `--phase quality`, treat it as no spec and continue):
 ```
 Error: spec file is empty at <path>
 ```
+An empty spec is a stop, never a licence to go looking for a fuller one elsewhere.
 
 ## Step 2: Detect base branch and get the diff
 
