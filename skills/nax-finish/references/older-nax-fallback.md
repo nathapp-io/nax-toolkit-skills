@@ -11,11 +11,11 @@ Degraded paths for an older nax that lacks `nax features resolve --json` (or lac
 **Otherwise treat `args` as a feature name** (if empty, discover first — below), set `featureName`, and search in this order:
 1. `.nax/features/<name>/spec.md` — markdown
 2. `.nax/specs/<name>.md` — markdown
-3. `docs/specs/SPEC-<name>.md`, else the first match of `docs/specs/*<name>*.md` — markdown
+3. `docs/specs/SPEC-<name>.md` — markdown, **exact filename only**. If that exact path does not exist, you may *list* `docs/specs/*<name>*.md` as candidates, but **never auto-accept a match** — not even a single one. A glob hit only means a filename shares a substring with the feature name; that is not evidence it is this feature's spec, and the path resolved here is handed to `post-impl-review`, which reviews the diff against whatever it is given. Print the candidates and ask the user to pick.
 4. `.nax/features/<name>/prd.json` — PRD fallback
 ```bash
 ls .nax/features/<name>/spec.md .nax/specs/<name>.md docs/specs/SPEC-<name>.md 2>/dev/null
-ls docs/specs/*<name>*.md 2>/dev/null
+ls docs/specs/*<name>*.md 2>/dev/null   # candidates to OFFER only — never auto-accept
 ls .nax/features/<name>/prd.json 2>/dev/null
 ```
 **If `args` is empty**, discover candidate features first, then resolve the chosen one via the ordered search above:
@@ -23,14 +23,14 @@ ls .nax/features/<name>/prd.json 2>/dev/null
 find .nax/features -maxdepth 2 -name prd.json 2>/dev/null   # completed features
 find .nax/features -maxdepth 2 -name spec.md 2>/dev/null
 ```
-Exactly one feature → use it. Multiple → list numbered and ask the user to pick.
+Multiple → list numbered and ask the user to pick. Exactly one → use it **only if it corroborates the work you are finishing** (branch name matches the feature, or that feature's `.nax/features/<name>/` files appear in the branch's commits); a repo can hold a stale feature dir from unrelated earlier work. With no corroboration, name it and ask before using it.
 
 **If no spec source resolves at all** (no markdown spec *and* no `prd.json`): **ask the user** rather than hard-stopping —
 ```
 No spec or PRD found for "<name>". Checked:
   .nax/features/<name>/spec.md
   .nax/specs/<name>.md
-  docs/specs/SPEC-<name>.md  (and docs/specs/*<name>*.md)
+  docs/specs/SPEC-<name>.md
   .nax/features/<name>/prd.json
 Where is the spec? Paste a path, or press enter to abort.
 ```
