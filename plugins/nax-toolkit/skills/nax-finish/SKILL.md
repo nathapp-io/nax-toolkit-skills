@@ -1,6 +1,6 @@
 ---
 name: nax-finish
-description: Finalize a completed nax feature through to an opened MR/PR. Resolves the feature's spec from .nax/features/<name>/spec.md, .nax/specs/, docs/specs/, or the prd.json fallback (asks if none resolves), and short-circuits if the branch is already merged. Reads the nax config (root plus per-package .nax/mono/<pkg>/config.json) for the repo's real quality commands (build/typecheck/lint/test) and acceptance command, drives the changed feature's acceptance tests to green first, runs post-impl-review in two phases (spec review, then code-quality on stabilized diff) in isolated subagents, triaging each phase's findings with the user and fixing approved ones, runs the repo-root quality gates to green, then — on explicit approval — opens a PR/MR with gh/glab, or promotes to ready the draft nax autoPR may already have opened (never a duplicate). Use after a nax run implements a feature and you want to review, verify, and ship it — triggers include "finish this nax feature", "wrap up the nax run", "/nax-finish <feature>".
+description: Finalize a completed nax feature through to an opened MR/PR, or resume one an escalated nax-finish autoflow stopped on. Resolves the feature's spec from .nax/features/<name>/spec.md, .nax/specs/, docs/specs/, or the prd.json fallback, and short-circuits if the branch is already merged. Reads the nax config (root plus per-package .nax/mono/<pkg>/config.json) for the repo's real quality and acceptance commands, drives the feature's acceptance tests green, runs post-impl-review in two phases (spec, then code-quality on the stabilized diff) in isolated subagents, triaging findings with the user and fixing approved ones, runs the repo-root quality gates green, then opens a PR/MR with gh/glab or promotes nax autoPR's draft — only on explicit approval. When the autoflow stopped with status "escalated", loads its findings from the finish-audit artifact rather than re-deriving them, triages them, and records the rulings. Triggers: "finish this nax feature", "nax-finish escalated", "/nax-finish <feature>".
 ---
 
 # nax-finish
@@ -9,7 +9,7 @@ Finalize a completed nax feature: prove the changed feature's acceptance tests p
 
 **Order rationale:** the cheap, deterministic acceptance gate runs **before** the expensive LLM review — a feature that fails its own spec contract shouldn't consume a full review + triage. Review itself is **phased**: spec-relative review runs **first**, its drift is fixed, and only then does code-quality review run — against the now-stabilized diff, so the open-ended quality pass never judges code the spec-fixes are about to rewrite (and you never burn a triage round on throwaway lines). The heavy repo-root quality gate runs **last**, once, after all review fixes are in, so it isn't re-invalidated and re-run.
 
-**Announce at start:** "Using nax-finish to finalize `<feature>`: config → acceptance → spec-review → fix → quality-review → fix → quality-gates → PR/MR."
+**Announce at start:** "Using nax-finish to finalize `<feature>`: config → acceptance → spec-review → fix → quality-review → fix → quality-gates → PR/MR." In resume mode (Step 1b), announce instead: "Using nax-finish to resume the escalated finish of `<feature>`: acceptance → triage <n> escalated finding(s) → fix → quality-gates → PR/MR."
 
 Work through the steps in order. **Each gate is blocking** — do not advance to the next step while the current one is red, unless the user explicitly tells you to proceed. Track the steps with TodoWrite so the user can see where the run is.
 
@@ -49,6 +49,23 @@ If `0`, the branch has nothing beyond base — the feature is already merged and
 <featureName> is 0 commits ahead of <base> — already merged / nothing to finish.
 ```
 and stop, unless the user explicitly tells you to proceed anyway. This fails fast on the same condition `post-impl-review` would hit at its empty-diff guard (Step 4), before spending Step 2's config read and Step 3's acceptance run.
+
+## Step 1b: Resume an escalated autoflow (only when an artifact exists)
+
+The nax-finish **autoflow** (the post-run plugin that drives `acpx flow run` after a successful `nax run`) can stop with `status: "escalated"` — it pushed its partial fixes and asked for human judgment, with no way back into its own graph. This skill is that way back. Resume **only** on `escalated`; every other status is a finished run.
+
+This runs after Step 1 because it needs the resolved `featureName` to find the directory. Take the newest `*.result.json` by mtime and read its `status`:
+
+```bash
+# <outputDir> defaults to ~/.nax/<projectKey>; see the reference for the override
+# and identity cross-check, which you MUST do before trusting the key.
+ls -t <outputDir>/finish-audit/<featureName>/*.result.json 2>/dev/null | head -1
+```
+
+- **No artifact, unreadable, or `status` is anything but `escalated`** → say nothing and continue normally at Step 2. This is the ordinary case: only the autoflow writes these files, so a feature you finished by hand has none.
+- **`status: "escalated"`** → print the `escalationReason` and the findings, confirm with the user that these are still live (they may have fixed them by hand since), and on confirmation run in **resume mode**: Step 4 loads findings from the artifact instead of deriving them, and Step 8 becomes required.
+
+**Read `references/resume-from-escalation.md` before acting on an artifact** — it owns artifact discovery (the `outputDir` override, `projectKey` derivation, the `.identity` cross-check, the repo-local fallback), the full result shape, and the sidecar contract.
 
 ## Step 2: Understand the nax config (quality + acceptance commands)
 
@@ -155,6 +172,8 @@ Print `Acceptance: PASS (<feature> — N tests)` when green.
 
 ## Step 4: Review the implementation — spec phase first (phased by default)
 
+> **Resume mode (Step 1b).** The escalated artifact already holds the review output — findings with full `problem` and `fix` prose — so **skip this step's derivation for the escalated phase**. Surface those findings verbatim (severity, title, problem, fix), state which phase escalated and how many fix rounds preceded it (`rounds[]`, which is **absent** when none ran), and carry them into Step 5 as that phase's findings. Do not re-invoke `post-impl-review` to re-derive what you already have. The other, non-escalated phase is not re-run up front either — Step 5's verification ladder re-reviews whatever your fixes actually reach. Everything else proceeds normally.
+
 Now that the feature passes its own contract, review the working code. nax-finish drives `post-impl-review` in **two phases by default**: spec-relative review first (Step 4 → spec triage in Step 5), then — after the spec drift is fixed — code-quality review on the **now-stabilized** diff (the quality phase in Step 5). Reviewing quality last means the open-ended quality pass never judges code the spec-fixes are about to rewrite, and you never burn a triage round on throwaway lines. **post-impl-review owns the phasing** via its `--phase` flag; nax-finish only decides *whether* to phase.
 
 **Decide phased vs. collapsed (this run).** Default to **phased** — a typical nax feature spans several stories and hundreds of lines, which is real spec-review surface where drift is plausible and reviewing quality on the *stabilized* diff pays off. Measure the changed diff first (you don't have a stat yet — the preflight only counted commits):
@@ -228,6 +247,18 @@ Now everything is green. Prepare the PR/MR, then either **open a new one** or **
 
 **Full mechanics live in `references/open-pr-mr.md`** — read it now and follow it. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e **detect whether a PR/MR already exists for the branch** and branch on it, 7f create a new one on approval (only when none exists), 7g promote an existing **draft → ready** on approval (leaving its autoPR body intact by default; a body refresh is offered, not forced). If a PR/MR already exists **and is already ready**, report its URL and stop — nothing to open. Leave the branch pushed if the user cancels.
 
+## Step 8: Record the resume decisions (resume mode only — required)
+
+Skip this step entirely on an ordinary run; it applies only when Step 1b entered resume mode.
+
+Write a sidecar beside the artifact you resumed from, recording how each escalated finding was ruled on:
+```
+<outputDir>/finish-audit/<featureName>/<runId>.decisions-<timestamp>.json
+```
+One entry per finding in the artifact — **every** finding, waivers included — each with a one-line `reason`, plus the resume's `outcome`. **Shape and field rules live in `references/resume-from-escalation.md`**; follow it rather than improvising the JSON.
+
+Write it as soon as triage is done and any fixes are committed. **Do not defer it past Step 7** — if the user abandons the PR at the approval gate, the judgments they just made are still worth keeping: write the sidecar with `outcome: "abandoned"` and no `url`. This file is the only record that a human ever ruled on these findings; nothing in nax writes it, and an unwritten one cannot be reconstructed.
+
 ## Final summary
 
 Close with a one-line verdict the user can scan — reflect what actually happened to the PR/MR (opened new, promoted draft→ready, or already ready):
@@ -236,12 +267,22 @@ nax-finish: <feature> — acceptance PASS · review ALIGNED · quality PASS · M
 nax-finish: <feature> — acceptance PASS · review ALIGNED · quality PASS · MR promoted to ready: <url>
 nax-finish: <feature> — acceptance PASS · review ALIGNED · quality PASS · MR already ready: <url>
 ```
+In resume mode, report the escalation's disposition instead of a review verdict, and name the sidecar:
+```
+nax-finish: <feature> — resumed escalation (3 findings: 1 fixed, 2 waived) · acceptance PASS · quality PASS · MR opened: <url>
+  decisions: <outputDir>/finish-audit/<feature>/<runId>.decisions-<timestamp>.json
+```
 If any gate was waived by the user, say so explicitly in the summary rather than implying a clean pass.
 
 ## Common mistakes
 
 | Mistake | Do instead |
 |:--------|:-----------|
+| Re-deriving the review when an escalated artifact already holds the findings | Check for one after Step 1; on `status: "escalated"` load its findings and triage those (Steps 1b, 4) |
+| Treating a missing finish-audit artifact as an error | Only the autoflow writes one — no artifact is the ordinary case; continue normally (Step 1b) |
+| Resuming from an artifact whose status isn't `escalated` | Gate strictly on `escalated`; `opened`/`promoted`/`already-ready` are finished runs (Step 1b) |
+| Skipping acceptance or the quality gates because the autoflow already ran them | It ran them against a tree that has since changed — both re-run in resume mode (Steps 3, 6) |
+| Finishing a resume without writing the decisions sidecar | It is the only record of the human ruling — write it even when the PR is abandoned (Step 8) |
 | Hand-resolving the spec with `ls`/`find` when `nax features resolve` exists | Run `nax features resolve "<args>" --json` and branch on `status`; only hand-resolve via the documented Fallback when the command is unavailable on older nax (Step 1) |
 | Hardcoding `bun test` / `npm run lint` | Read `quality.commands.*` and `acceptance.command` from config (Step 2) |
 | Running the whole acceptance suite | Scope to the changed feature's acceptance file(s) (Step 3) |
