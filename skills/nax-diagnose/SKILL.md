@@ -5,226 +5,120 @@ description: Use when a nax run has failed, stalled, crashed, or produced unexpe
 
 # nax-diagnose
 
-Diagnose why a nax run failed by reading its artifacts from disk. Print a structured root-cause report to the terminal.
+Diagnose a failed nax run by reading its artifacts from disk. Print a structured root-cause report.
 
-**Announce at start:** "Using nax-diagnose to diagnose `<feature-name>` run failure."
+**Announce at start:** "Using nax-diagnose to diagnose `<feature>` in `<project>`."
 
----
+## Step 0: Resolve project, repo, and feature
+
+`args` is what the user typed — usually a project name, a feature name, or both. Resolve all three before reading anything; the cwd may be a subdirectory or an unrelated repo, and the artifact root is a configured path, not `basename $PWD`.
+
+`GLOBAL_DIR` = `$NAX_GLOBAL_CONFIG_DIR` if set, else `~/.nax`.
+
+**Project → repo (preferred path).** Each project has an identity file naming its checkout:
+```bash
+cat "$GLOBAL_DIR/<name>/.identity"      # → { "name", "workdir", ... }
+```
+`PROJECT_KEY` = that directory name, `REPO_ROOT` = its `workdir`. If `<name>` has no identity file, grep all of them for a near match:
+```bash
+grep -H '"workdir"' "$GLOBAL_DIR"/*/.identity      # every project and its checkout
+```
+
+**No project named** — walk up from cwd for `.nax/config.json` (this is nax's own `findProjectDir`):
+```bash
+d=$PWD; while [ "$d" != "/" ] && [ ! -f "$d/.nax/config.json" ]; do d=$(dirname "$d"); done
+```
+Then `PROJECT_KEY` = `name` from `$d/.nax/config.json`, else `basename $d`. If the walk finds nothing, list the identities above and ask which project — never guess.
+
+**`OUTPUT_DIR`** = `outputDir` from `$REPO_ROOT/.nax/config.json`, else from `$GLOBAL_DIR/config.json` (absolute or `~/`-prefixed), else `$GLOBAL_DIR/$PROJECT_KEY`.
+
+**Feature** — from `args`, else:
+```bash
+(cd "$REPO_ROOT" && nax features resolve "<args>" --json)   # <args> may be empty
+```
+Take `featureName` on `ok` or `missing` (a missing *spec* is fine — diagnosis reads `prd.json`). On `ambiguous`/`feature-not-found` with candidates, ask which. With no candidates, stop. If the command isn't JSON (older nax), `ls "$REPO_ROOT/.nax/features/"` and apply the same rules.
+
+Print the resolved roots, then proceed:
+```
+Project koda   Repo /home/me/work/koda   Out ~/.nax/koda   Feature graphify-kb
+```
 
 ## Artifact layout
 
-nax writes artifacts to two locations. Know which is which before reading anything:
+Two roots, not interchangeable. Use these variables — never a cwd-relative path:
 
 | Location | What lives here |
 |:---------|:----------------|
-| `~/.nax/<project>/features/<feature>/` | `status.json`, `runs/` (JSONL logger output) |
-| `.nax/features/<feature>/` (project-local) | `prd.json`, `sessions/`, `stories/` |
-| `~/.nax/events/<project>/events.jsonl` | Pipeline lifecycle events (global, flat file) |
-| `~/.nax/<project>/prompt-audit/<feature>/` | Prompt audit (optional, if enabled) |
-| `~/.nax/<project>/review-audit/<feature>/` | Review audit (optional, if enabled) |
+| `$OUTPUT_DIR/features/<feature>/` | `status.json`, `runs/` (logger JSONL) |
+| `$REPO_ROOT/.nax/features/<feature>/` | `prd.json`, `sessions/`, `stories/` |
+| `$GLOBAL_DIR/events/$(basename "$REPO_ROOT")/events.jsonl` | Pipeline lifecycle events |
+| `$OUTPUT_DIR/prompt-audit/<feature>/` | Prompt audit (opt-in; `config.agent.promptAudit.dir` overrides) |
+| `$OUTPUT_DIR/review-audit/<feature>/` | Review audit (opt-in) |
 
-**`<project>`** = `$(basename $PWD)`. All steps below use this convention.
+> Events are keyed on `basename(REPO_ROOT)`, **not** `PROJECT_KEY` — under a `name` override the two directories differ legitimately. Don't "correct" one to match the other.
 
----
-
-## Step 1: Resolve the feature name
-
-`args` is the text the user typed after invoking the skill.
-
-**If `args` is a plain name** (e.g. `graphify-kb`): use it as the feature name.
-
-**If `args` is empty**:
-```bash
-ls .nax/features/ 2>/dev/null
-```
-- If exactly one feature: use it, print the resolved name.
-- If multiple: list them and ask the user to pick.
-- If none: print error and stop:
-  ```
-  No features found under .nax/features/. Pass a feature name: /nax-diagnose <name>
-  ```
-
----
-
-## Step 2: Read the status file
+## Step 1: Status
 
 ```bash
-cat ~/.nax/$(basename $PWD)/features/<feature>/status.json 2>/dev/null
+cat "$OUTPUT_DIR/features/<feature>/status.json"
 ```
+Extract: `run.status` · `run.startedAt`/`completedAt`/`crashedAt` · `run.crashSignal` (15=SIGTERM, 9=SIGKILL) · `progress.{passed,failed,pending,blocked}` · `current` · `postRun.acceptance.status` · `postRun.regression.status` · `cost.spent`/`cost.limit` (flag if spent ≥ limit).
 
-Extract and print:
-- `run.status` — overall run outcome (`running`, `completed`, `failed`, `crashed`, `stalled`, `precheck-failed`)
-- `run.startedAt` / `run.completedAt` / `run.crashedAt` — timing
-- `run.crashSignal` — signal that killed the process (if crashed: SIGTERM=15, SIGKILL=9)
-- `progress.passed` / `progress.failed` / `progress.pending` / `progress.blocked` — story counts
-- `current` — which story was active when the run stopped
-- `postRun.acceptance.status` — acceptance gate result
-- `postRun.regression.status` — regression gate result
-- `cost.spent` / `cost.limit` — cost tracking (flag if `spent >= limit`)
+Missing file → suspect resolution before crash. If `ls "$OUTPUT_DIR/features/"` shows other features the root is right and the run truly wrote nothing (`[WARN] status.json not found — check events and session descriptors`). If it's empty, re-resolve Step 0 and say which root you tried.
 
-If `status.json` is missing, print:
-```
-[WARN] status.json not found — run may have crashed before writing status.
-       Check event log and session descriptors directly.
-```
-
----
-
-## Step 3: Read the PRD for per-story state
+## Step 2: Per-story state
 
 ```bash
-cat .nax/features/<feature>/prd.json 2>/dev/null
+cat "$REPO_ROOT/.nax/features/<feature>/prd.json"
 ```
-
-For each story, extract:
-- `id`, `title`, `status`
-- `attempts` — how many times tried
-- `escalations` — tier escalations (fromTier, toTier, reason)
-- `priorErrors` — accumulated error messages
-- `dependencies` — blocked-by story IDs
-
-Print a story state table:
+Per story pull `id`, `title`, `status`, `attempts`, `escalations`, `priorErrors`, `dependencies`:
 ```
-STORY STATE
-────────────────────────────────────────
 US-001  "Implement search index"  failed   3 attempts  [escalated fast→balanced→powerful]
 US-002  "Add query endpoint"      blocked  0 attempts  [waiting on US-001]
-US-003  "Write E2E tests"         pending  0 attempts
 ```
+Print each failed story's last `priorErrors` entry below the table.
 
-For each failed story, print its `priorErrors` last entry below the table.
-
----
-
-## Step 4: Inspect session descriptors
+## Step 3: Sessions and stage progress
 
 ```bash
-ls .nax/features/<feature>/sessions/ 2>/dev/null
+ls  "$REPO_ROOT/.nax/features/<feature>/sessions/"
+cat "$REPO_ROOT/.nax/features/<feature>/sessions/<sessionId>/descriptor.json"
 ```
+Pull `id`, `role`, `state`, `storyId`, `completedStages`, `lastActivityAt`. Terminal states are `COMPLETED`/`FAILED`; flag `FAILED` sessions and `RUNNING` ones idle >60s. Partial `completedStages` pinpoints the stalled stage.
 
-For each session directory:
+Then, per failed story, which `context-manifest-<stage>.json` files exist (`context`, `execution`, `acceptance-setup`) — missing = never reached:
 ```bash
-cat .nax/features/<feature>/sessions/<sessionId>/descriptor.json
+ls "$REPO_ROOT/.nax/features/<feature>/stories/<storyId>/"
 ```
 
-Extract: `id`, `role`, `state`, `storyId`, `completedStages`, `lastActivityAt`
-
-Terminal states are `COMPLETED` and `FAILED`. Flag sessions in `FAILED` state or sessions still `RUNNING` with a stale `lastActivityAt` (>60s ago):
-```
-[FAILED] sess-abc123 (role: implementer, story: US-001) — state: FAILED
-         completedStages: [context, prompt]   last activity: 2026-06-10T14:23:11Z
-         (stalled after prompt stage — execution never started)
-```
-
-Partial `completedStages` shows exactly which pipeline stage the session got stuck at.
-
----
-
-## Step 5: Check context manifests for missing stages
+## Step 4: Run timeline
 
 ```bash
-ls .nax/features/<feature>/stories/<storyId>/ 2>/dev/null
+grep "<feature>" "$GLOBAL_DIR/events/$(basename "$REPO_ROOT")/events.jsonl" | tail -20
 ```
-
-List which `context-manifest-<stage>.json` files exist for each failed story. Missing = never reached.
-
-Known stage names written to context manifests: `context`, `execution`, `acceptance-setup`
-
-Print:
-```
-STORY US-001 STAGE PROGRESS
-  [OK] context
-  [MISSING] execution  ← run stopped here
-  [MISSING] acceptance-setup
-```
-
----
-
-## Step 6: Check the run event log
-
-Two separate sources for the run timeline — read both:
-
-**A. Pipeline lifecycle events (global):**
-```bash
-grep "<feature>" ~/.nax/events/$(basename $PWD)/events.jsonl 2>/dev/null | tail -20
-```
-Events emitted: `run:started`, `story:started`, `story:completed`, `story:failed`, `run:completed`, `run:paused`
-
-Look for:
-- Missing `run:completed` entry = run crashed mid-flight
-- `story:failed` entry with reason field = last story failure message
-- `story:started` with no matching `story:completed` or `story:failed` = story currently stuck
-
-**B. Structured logger output (per-run JSONL):**
-```bash
-ls -t ~/.nax/$(basename $PWD)/features/<feature>/runs/ 2>/dev/null | head -3
-tail -30 ~/.nax/$(basename $PWD)/features/<feature>/runs/<runId>.jsonl 2>/dev/null
-```
-This file contains `debug`/`info`/`warn`/`error` log entries from the run. Look for:
-- Error-level entries near the end
-- Exit codes: 124 = timeout, 134 = SIGABRT (Bun JSC crash), 132 = SIGILL
-
----
-
-## Step 7: Prompt audit (only if explicitly requested)
-
-Skip this step unless the user said "check prompt audit", "include prompt audit", or similar.
-
-**Prompt audit location:** `~/.nax/<project>/prompt-audit/<feature>/`
-
-Files are named `<runId>.jsonl` (correlates with `status.json` → `run.id`):
-```bash
-ls ~/.nax/$(basename $PWD)/prompt-audit/<feature>/ 2>/dev/null | sort | tail -5
-tail -5 ~/.nax/$(basename $PWD)/prompt-audit/<feature>/<runId>.jsonl
-```
-
-Each line is a `PromptAuditEntry` (success) or `PromptAuditErrorEntry` (failure). Print from the last entry:
-- `ts`, `stage`, `storyId`, `callType`, `turn`
-- `durationMs` — values >60000ms suggest agent timeout
-- `errorCode` / `errorMessage` — present only on error entries
-
-If no files found:
-```
-[INFO] No prompt audit files found. Prompt audit may be disabled (check config.agent.promptAudit.enabled).
-```
-
----
-
-## Step 8: Review audit (only if explicitly requested)
-
-Skip this step unless the user said "check review audit", "include review audit", or similar.
-
-**Review audit location:** `~/.nax/<project>/review-audit/<feature>/`
+Events: `run:started`, `story:started|completed|failed`, `run:completed`, `run:paused`. No `run:completed` = crashed mid-flight; a `story:started` with no terminal partner = stuck story.
 
 ```bash
-ls ~/.nax/$(basename $PWD)/review-audit/<feature>/ 2>/dev/null | sort | tail -5
-cat ~/.nax/$(basename $PWD)/review-audit/<feature>/<latest-file>
+ls -t "$OUTPUT_DIR/features/<feature>/runs/" | head -3
+tail -30 "$OUTPUT_DIR/features/<feature>/runs/<runId>.jsonl"
 ```
+Look for error-level entries near the end, and exit codes: 124 = timeout, 134 = SIGABRT (Bun JSC crash), 132 = SIGILL.
 
-Extract and print:
-- `reviewer` — `semantic` or `adversarial`
-- `parsed` — `false` = JSON parse error, heuristic fallback used
-- `failOpen` — `true` = review degraded gracefully (result may be unreliable)
-- `passed` — final verdict
-- `blockingThreshold` — findings below this level are advisory only
-- `advisoryFindings` count — findings that were dropped as non-blocking
+## Step 5: Audits (only if asked)
 
-Flag issues:
-```
-[WARN] Review parse failed (parsed: false) — heuristic fallback used
-[WARN] failOpen: true — review degraded gracefully, result may be unreliable
-[WARN] 3 advisory findings dropped (blockingThreshold: error) — may hide real issues
-```
+Skip unless the user asked for prompt or review audit.
 
-> Cross-run telemetry: to review adversarial **recurrence-demotion** across many runs — findings tagged `advisoryFindings[].meta.coverageGap` (auto-demoted after recurring past `maxBlockingRounds`) — use the **nax-coverage-gap** skill. That is cross-run telemetry (is demotion dropping real bugs?), distinct from this skill's single-run failure RCA.
+**Prompt audit** — `<runId>.jsonl` files correlating with `status.json` → `run.id`. From the last entry print `ts`, `stage`, `storyId`, `callType`, `turn`, `durationMs` (>60000 suggests agent timeout), and `errorCode`/`errorMessage` on error entries. Nothing there → likely disabled (`config.agent.promptAudit.enabled`).
 
----
+**Review audit** — print `reviewer` (semantic/adversarial), `passed`, `blockingThreshold`, `advisoryFindings` count, and flag `parsed: false` (parse error, heuristic fallback) and `failOpen: true` (degraded, result unreliable).
 
-## Step 9: Print diagnosis report
+> For cross-run **recurrence-demotion** telemetry (`advisoryFindings[].meta.coverageGap`) use the **nax-coverage-gap** skill — that asks whether demotion drops real bugs, distinct from this skill's single-run RCA.
+
+## Step 6: Report
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-NAX DIAGNOSIS: <feature-name>
+NAX DIAGNOSIS: <feature>
 Project: <project>  Run: <run.id or "unknown">
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -233,45 +127,39 @@ Stories: <passed> passed · <failed> failed · <pending> pending · <blocked> bl
 
 STORY STATE
 ────────────────────────────────────────
-<story table from Step 3>
+<table from Step 2>
 
 FAILURE SUMMARY
 ────────────────────────────────────────
-<root cause findings, one per line, with severity prefix>
+<one finding per line, severity-prefixed>
 
 RECOMMENDED ACTIONS
 ────────────────────────────────────────
 <actionable next steps>
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
----
-
-## Severity classification
-
 | Prefix | Meaning |
 |:-------|:--------|
-| `[CRASH]` | Process killed by signal (SIGTERM/SIGKILL/SIGABRT) — check system resources |
-| `[BLOCKED]` | Story blocked by a failed dependency — fix the dependency story first |
-| `[STALLED]` | Session in FAILED state or RUNNING with stale activity — check agent timeout |
-| `[FAILED]` | Story exhausted all escalation tiers — inspect `priorErrors` for root cause |
-| `[REVIEW]` | Review audit anomaly — parse error, failOpen, or advisory findings dropped |
-| `[COST]` | Run stopped at cost limit — increase `cost.limit` in config |
-| `[PRECHECK]` | Precheck failed — git dirty files, missing build tools, or lockfile issues |
-| `[WARN]` | Non-blocking issue worth noting |
-
----
+| `[CRASH]` | Killed by signal — check system resources |
+| `[BLOCKED]` | Blocked by a failed dependency — fix that story first |
+| `[STALLED]` | Session FAILED, or RUNNING with stale activity — check agent timeout |
+| `[FAILED]` | Exhausted all escalation tiers — read `priorErrors` |
+| `[REVIEW]` | Review audit anomaly — parse error, failOpen, advisory drops |
+| `[COST]` | Stopped at cost limit — raise `cost.limit` |
+| `[PRECHECK]` | Precheck failed — dirty git, missing build tools, lockfile |
+| `[WARN]` | Non-blocking, worth noting |
 
 ## Common failure patterns
 
-| Scenario | Indicators | Recommended action |
-|:---------|:-----------|:-------------------|
-| Agent timeout | `durationMs > 60000` in prompt audit, session `state: FAILED` | Retry with `--profile` using a longer timeout or more powerful tier |
-| Escalation exhausted | `escalations` has all 3 tiers, `status: failed` | Read `priorErrors` — if same error repeats, the spec or test may be wrong |
-| Precheck failure | `run.status: precheck-failed`, missing `story:started` events | Run `git status`, check build tools, verify test command works standalone |
-| Crash mid-run | `run.crashSignal` present, no `run:completed` event | Check system resources (OOM); retry with `nax run -f <feature> --resume` |
-| Review parse failure | `parsed: false` in review audit | Usually transient — retry; if persistent, check model output in prompt audit |
-| Blocked dependency chain | Multiple stories `status: blocked`, one root `status: failed` | Fix the root failure first; others will unblock automatically on retry |
-| Acceptance gate failed | `postRun.acceptance.status: failed` | Check `postRun.acceptance.failedACs` for which ACs are unmet |
-| Cost limit hit | `cost.spent >= cost.limit` in status | Increase `config.cost.limit` or optimize prompts |
+| Indicators | Action |
+|:-----------|:-------|
+| `durationMs > 60000`, session `FAILED` | Agent timeout — retry with a `--profile` giving longer timeout or a stronger tier |
+| All 3 tiers in `escalations`, `status: failed` | Read `priorErrors` — a repeating identical error means the spec or test is wrong |
+| `run.status: precheck-failed`, no `story:started` | Check `git status`, build tools, and that the test command runs standalone |
+| `run.crashSignal` set, no `run:completed` | Check for OOM; retry `nax run -f <feature> --resume` |
+| `parsed: false` in review audit | Usually transient — retry; if persistent, inspect model output in prompt audit |
+| Many `blocked` stories, one root `failed` | Fix the root; the rest unblock on retry |
+| `postRun.acceptance.status: failed` | Read `postRun.acceptance.failedACs` |
+| `cost.spent >= cost.limit` | Raise `config.cost.limit` or trim prompts |
+| Empty `$OUTPUT_DIR`, "nothing ever ran" | Wrong root — re-resolve Step 0 against the `.identity` files before concluding this |
