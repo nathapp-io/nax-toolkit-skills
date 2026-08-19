@@ -1,6 +1,6 @@
 ---
 name: nax-finish
-description: Finalize a completed nax feature through to an opened MR/PR, or resume one an escalated nax-finish autoflow stopped on. Resolves the feature's spec from .nax/features/<name>/spec.md, .nax/specs/, docs/specs/, or the prd.json fallback, and short-circuits if the branch is already merged. Reads the nax config (root plus per-package .nax/mono/<pkg>/config.json) for the repo's real quality and acceptance commands, drives the feature's acceptance tests green, runs post-impl-review in two phases (spec, then code-quality on the stabilized diff) in isolated subagents, triaging findings with the user and fixing approved ones, runs the repo-root quality gates green, then opens a PR/MR with gh/glab or promotes nax autoPR's draft — only on explicit approval. When the autoflow stopped with status "escalated", loads its findings from the finish-audit artifact rather than re-deriving them, triages them, and records the rulings. Triggers: "finish this nax feature", "nax-finish escalated", "/nax-finish <feature>".
+description: Finalize a completed nax feature through to an opened MR/PR, or resume one that nax's finish phase escalated out of. Resolves the feature's spec from .nax/features/<name>/spec.md, .nax/specs/, docs/specs/, or the prd.json fallback, and short-circuits if the branch is already merged. Reads the nax config (root plus per-package .nax/mono/<pkg>/config.json) for the repo's real quality and acceptance commands, drives the feature's acceptance tests green, runs post-impl-review in two phases (spec, then code-quality on the stabilized diff) in isolated subagents, triaging findings with the user and fixing approved ones, runs the repo-root quality gates green, then opens a PR/MR with gh/glab or promotes nax autoPR's draft — only on explicit approval. When nax's finish phase stopped with status "escalated", loads its findings from the finish-audit artifact rather than re-deriving them, triages them, and records the rulings. Triggers: "finish this nax feature", "nax-finish escalated", "/nax-finish <feature>".
 ---
 
 # nax-finish
@@ -50,9 +50,9 @@ If `0`, the branch has nothing beyond base — the feature is already merged and
 ```
 and stop, unless the user explicitly tells you to proceed anyway. This fails fast on the same condition `post-impl-review` would hit at its empty-diff guard (Step 4), before spending Step 2's config read and Step 3's acceptance run.
 
-## Step 1b: Resume an escalated autoflow (only when an artifact exists)
+## Step 1b: Resume an escalated finish phase (only when an artifact exists)
 
-The nax-finish **autoflow** (the post-run plugin that drives `acpx flow run` after a successful `nax run`) can stop with `status: "escalated"` — it pushed its partial fixes and asked for human judgment, with no way back into its own graph. This skill is that way back. Resume **only** on `escalated`; every other status is a finished run.
+Nax's **finish phase** — the post-run phase it runs in-process after a successful `nax run` — can stop with `status: "escalated"`: it pushed its partial fixes and asked for human judgment, with no way back in. This skill is that way back. Resume **only** on `escalated`; every other status is a finished run. (Older nax ran the same logic as an external flow; the artifacts are identical, so nothing here depends on which produced them.)
 
 This runs after Step 1 because it needs the resolved `featureName` to find the directory. Take the newest `*.result.json` by mtime and read its `status`:
 
@@ -62,10 +62,10 @@ This runs after Step 1 because it needs the resolved `featureName` to find the d
 ls -t <outputDir>/finish-audit/<featureName>/*.result.json 2>/dev/null | head -1
 ```
 
-- **No artifact, unreadable, or `status` is anything but `escalated`** → say nothing and continue normally at Step 2. This is the ordinary case: only the autoflow writes these files, so a feature you finished by hand has none.
+- **No artifact, unreadable, or `status` is anything but `escalated`** → say nothing and continue normally at Step 2. This is the ordinary case: only nax's finish phase writes these files, so a feature you finished by hand has none.
 - **`status: "escalated"`** → print the `escalationReason` and the findings, confirm with the user that these are still live (they may have fixed them by hand since), and on confirmation run in **resume mode**: Step 4 loads findings from the artifact instead of deriving them, and Step 8 becomes required.
 
-**Read `references/resume-from-escalation.md` before acting on an artifact** — it owns artifact discovery (the `outputDir` override, `projectKey` derivation, the `.identity` cross-check, the repo-local fallback), the full result shape, and the sidecar contract.
+**Read `references/resume-from-escalation.md` before acting on an artifact** — it owns artifact discovery (the `outputDir` override, `projectKey` derivation, the `.identity` cross-check, the legacy repo-local path), the full result shape and round outcomes, and the sidecar contract.
 
 ## Step 2: Understand the nax config (quality + acceptance commands)
 
@@ -98,7 +98,7 @@ Config: single-package · quality: build,typecheck,lint,test · acceptance: enab
 ```
 or
 ```
-Config: monorepo (6 pkgs, project.type=monorepo) · root quality: typecheck,lint,test,format (build unset) · acceptance: enabled
+Config: monorepo (6 pkgs, project.type=monorepo) · root quality: typecheck,lint,test (build unset) · acceptance: enabled
 ```
 If a gate the user expects is missing (e.g. no `test` command at all), say so plainly — don't silently skip it.
 
@@ -220,11 +220,11 @@ Do not advance to Step 6 while a CRITICAL or HIGH finding is open and unaddresse
 
 Run the **repo-root** quality commands — every gate that is configured *and* required — from `repoRoot`, regardless of whether the repo is single-package or a monorepo:
 
-For each of `build`, `typecheck`, `lint`, `test`, `format` — skipping any whose command is unset, which is the only way a gate is off. Run `format` (the check variant, e.g. `ruff format --check`) whenever `quality.commands.format` is set: nax's own schema has no `format` gate, but the `nax-finish` autoflow runs it, so a repo that configures one expects it enforced here too:
+For each of `build`, `typecheck`, `lint`, `test` — skipping any whose command is unset, which is the only way a gate is off — matching the gate order nax's own finish phase runs:
 ```bash
 <the exact command string from quality.commands.<gate>>
 ```
-Run the **unscoped** commands (the full repo), not the `*Scoped` variants — this is the final whole-repo gate. Use the **check** command (`format`), never the mutating `formatFix`/`lintFix`, in the gate; only reach for the `*Fix` variant as a proposed fix under user approval. Capture each exit code.
+Run the **unscoped** commands (the full repo), not the `*Scoped` variants — this is the final whole-repo gate. **Never run `formatFix`/`formatFixScoped`/`lintFix` as a gate**: they mutate files, so a green from one proves only that it rewrote the tree. They are proposed fixes, applied under user approval, after which the real gate re-runs. There is no `format` key in nax's `quality.commands` schema, and unknown keys are stripped rather than rejected, so a `format` entry in a config is silently ignored by nax itself — do not resurrect it as a gate here. Capture each exit code.
 
 Every run must be **green (exit 0)**. If any gate fails:
 1. Show the failing output.
@@ -237,7 +237,6 @@ Quality (repo root):
   typecheck  PASS
   lint       PASS
   test       PASS
-  format     PASS
   build      (skipped — not configured)
 ```
 
@@ -279,9 +278,9 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Mistake | Do instead |
 |:--------|:-----------|
 | Re-deriving the review when an escalated artifact already holds the findings | Check for one after Step 1; on `status: "escalated"` load its findings and triage those (Steps 1b, 4) |
-| Treating a missing finish-audit artifact as an error | Only the autoflow writes one — no artifact is the ordinary case; continue normally (Step 1b) |
+| Treating a missing finish-audit artifact as an error | Only nax's finish phase writes one — no artifact is the ordinary case; continue normally (Step 1b) |
 | Resuming from an artifact whose status isn't `escalated` | Gate strictly on `escalated`; `opened`/`promoted`/`already-ready` are finished runs (Step 1b) |
-| Skipping acceptance or the quality gates because the autoflow already ran them | It ran them against a tree that has since changed — both re-run in resume mode (Steps 3, 6) |
+| Skipping acceptance or the quality gates because the finish phase already ran them | It ran them against a tree that has since changed — both re-run in resume mode (Steps 3, 6) |
 | Finishing a resume without writing the decisions sidecar | It is the only record of the human ruling — write it even when the PR is abandoned (Step 8) |
 | Hand-resolving the spec with `ls`/`find` when `nax features resolve` exists | Run `nax features resolve "<args>" --json` and branch on `status`; only hand-resolve via the documented Fallback when the command is unavailable on older nax (Step 1) |
 | Hardcoding `bun test` / `npm run lint` | Read `quality.commands.*` and `acceptance.command` from config (Step 2) |
