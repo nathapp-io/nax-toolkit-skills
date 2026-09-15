@@ -50,7 +50,11 @@ reads to judge an integration-shaped defect.)
 | MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; an integration gap reachable through a now-permitted input; a test-isolation defect that can cause false positives or flakiness under reordering/parallelism; a resource leak; a swallowed error on a real path; a concurrency/race or performance regression the diff introduces; or an accessibility defect on a new interactive UI element |
 | LOW | Minor naming deviation, style mismatch, dead/redundant/duplicated code, unused locals, a soft convention deviation, or other non-blocking gap |
 
-Wiring clauses in that table (an unreachable declared mechanism; a
+That table is keyed to the SPEC dimensions. If you are the QUALITY worker,
+grade by the **quality-local severity block at the end of `code-quality.md`**,
+which overrides it — the table's CRITICAL and HIGH rows are spec-gated, so
+applying it alone would cap every quality defect except a security sink at
+MEDIUM. Wiring clauses in that table (an unreachable declared mechanism; a
 partially-wired mechanism) belong to the **SPEC** dimension. A QUALITY worker
 does not apply them — it has no spec and therefore no access to the exemptions
 that make the judgement safe.
@@ -63,7 +67,8 @@ finding as a block:
 
 ```
 [SEVERITY] <short title>
-  Problem: <what's wrong, with file/line and the concrete cost>
+  Problem: <what's wrong — quote the mechanism (the predicate, cast, call or
+           missing guard) with its file/line, and the concrete cost>
   Fix: <the concrete change, or "note intentional deviation">
 ```
 
