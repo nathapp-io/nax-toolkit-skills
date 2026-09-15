@@ -45,16 +45,18 @@ reads to judge an integration-shaped defect.)
 
 | Severity | Meaning |
 |:---------|:--------|
-| CRITICAL | AC entirely missing; implementation directly contradicts a hard spec requirement; the changed code raises/crashes at runtime for a case the spec requires to work; a mechanism the diff declares that nothing on a production path can reach (an AC delivered to its own tests only); or a security defect the diff introduces (hardcoded secret, injection sink) |
-| HIGH | Significant drift (wrong API shape, missing constraint, wrong architectural approach); an integration defect that breaks a real collaborator the spec depends on; a partially-wired mechanism (one of several required call sites connected, or a live path gated behind a switch nothing sets); or a violation of a project rule explicitly marked as required/forbidden (a banned API, a hard-blocked pattern) |
-| MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; an integration gap reachable through a now-permitted input; a test-isolation defect that can cause false positives or flakiness under reordering/parallelism; a resource leak; a swallowed error on a real path; a concurrency/race or performance regression the diff introduces; or an accessibility defect on a new interactive UI element |
+| CRITICAL | AC entirely missing; implementation directly contradicts a hard spec requirement; the changed code raises/crashes at runtime for a case the spec requires to work; a mechanism the diff declares that nothing on a production path can reach (an AC delivered to its own tests only); the changed code can lose or corrupt data, or silently discards a real failure on a production path whose caller you can name and whose caller reads the substituted value as success (a swallowed exception, an unchecked exit or status code, a fallback returning empty on error); or a security defect the diff introduces (hardcoded secret, injection sink) |
+| HIGH | Significant drift (wrong API shape, missing constraint, wrong architectural approach); an integration defect that breaks a real collaborator the spec depends on; a partially-wired mechanism (one of several required call sites connected, or a live path gated behind a switch nothing sets); a resource leak, a race, or an N+1 / blocking-I/O regression on a path that runs in production; a test whose green depends on ordering, environment or wall-clock, which makes every other gate in this review unreliable; or a violation of a project rule explicitly marked as required/forbidden (a banned API, a hard-blocked pattern) |
+| MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; an integration gap reachable through a now-permitted input; a leak, race or performance regression on a path that is not clearly production-reachable; a swallowed error on a secondary path; an accessibility defect on a new interactive UI element; or a design/maintainability concern with a named, concrete cost |
 | LOW | Minor naming deviation, style mismatch, dead/redundant/duplicated code, unused locals, a soft convention deviation, or other non-blocking gap |
 
-That table is keyed to the SPEC dimensions. If you are the QUALITY worker,
-grade by the **quality-local severity block at the end of `code-quality.md`**,
-which overrides it — the table's CRITICAL and HIGH rows are spec-gated, so
-applying it alone would cap every quality defect except a security sink at
-MEDIUM. Wiring clauses in that table (an unreachable declared mechanism; a
+**Break ties on blast radius, not on defect kind.** A leak in a per-request
+handler and a leak in a once-at-startup path are not the same severity. Data
+loss, security, or a crash on a live path pushes up; reachable only from a
+startup path, a dev-only branch or a rare boundary pushes down. Say which in the
+`Problem:` line.
+
+Wiring clauses in that table (an unreachable declared mechanism; a
 partially-wired mechanism) belong to the **SPEC** dimension. A QUALITY worker
 does not apply them — it has no spec and therefore no access to the exemptions
 that make the judgement safe.

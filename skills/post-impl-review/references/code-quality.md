@@ -37,7 +37,10 @@ Report only concrete, objective issues, not style preferences:
   `{}`, `null`, a cached or degraded value — so the caller cannot distinguish
   "empty" from "broken". You have no spec here, so the justification must be
   visible in the code itself (a comment, a name like `…OrDefault`, an explicit
-  flag in the return); absent that, report it.
+  flag in the return); absent that it is **in scope** — then still apply the
+  confidence threshold and the refutation brake below before reporting it. A
+  fallback only reaches CRITICAL when you can name the production caller that
+  reads the substituted value as success; otherwise it is MEDIUM.
 - **Concurrency:** shared state mutated without synchronisation; `await` inside a
   loop that should be batched; a race between a check and the action it guards.
 - **Performance:** N+1 queries or network calls in a loop; blocking I/O on a hot
@@ -61,17 +64,18 @@ Report only concrete, objective issues, not style preferences:
   stale or contradicting the code it sits on, or a changed public API left without
   the docs a caller needs; an edge case the changed code's *own* logic implies but
   doesn't handle. These are the qualitative "this code isn't good yet" findings —
-  judge them, don't skip them because they aren't on the defect list above. Anchor
-  each to the changed line and state the concrete cost (what breaks, or who is
-  misled, later).
+  judge them, don't skip them because they aren't on the defect list above. Quote
+  the mechanism with its changed line, per the rule below, and state the concrete
+  cost (what breaks, or who is misled, later).
 
 Every finding here must **quote the mechanism** — the actual predicate, cast,
 call, assignment or missing guard — alongside the changed line, and name a
-concrete cost: a bug, a future break, or a reader who will be misled. Quote the
-mechanism, not just the offset: a finding anchored to `foo.ts:214` is unverifiable
-the moment the file moves or is split, while one that quotes
-`catch { return [] }` can be re-checked by anyone, anywhere, forever. The line
-number locates it; the quoted mechanism *is* the evidence. Skip pure formatting and
+concrete cost: a bug, a future break, or a reader who will be misled. A line
+number goes stale the moment the file moves; `catch { return [] }` does not.
+Where the defect is an **absence**, quote the line that should have carried the
+guard and say what is missing (`fetchUser(id)` at `user.ts:88`, result never
+null-checked). Where it spans a function, quote the signature plus the one line
+that best shows the problem. Skip pure formatting and
 personal taste that carry no such cost, and skip hypotheticals about code outside
 the diff. But a design or maintainability concern grounded in a changed line and
 its cost **is** in scope even though it's not on the defect checklist above —
@@ -79,33 +83,40 @@ that is exactly the signal this dimension exists to surface.
 
 ## What NOT to report
 
-These are out of scope here even when they are real. Each is cheap to decide, so
-decide it before writing anything down:
+These are out of scope here even when they are real:
 
 - **Pre-existing defects on lines the diff did not touch.** Not this change's
   blast radius — stay silent. The one exception: a changed line that makes a
   pre-existing defect newly *reachable* is this diff's finding; anchor it to the
-  changed line that opened the path, not to the old one.
-- **Anything a linter, typechecker, compiler or formatter catches** — missing or
-  unused imports, type errors, import order, formatting, unreachable-code
-  warnings. Assume CI runs these; do not run them yourself. If your only evidence
-  is "a tool would flag this", drop it.
-- **Anything the author explicitly silenced in-code** next to the line —
-  `@design`, `eslint-disable`, `# noqa`, `// nolint`, `# type: ignore`, or a
-  comment stating the tradeoff. That is a recorded decision, not a defect.
+  changed line that opened the path, not to the old one. A defect you find in an
+  unchanged collaborator the changed code now calls into is **not** pre-existing
+  for this purpose — that is new reachability, and it is yours to report.
+- **Noise a default-configured linter, formatter or compiler emits on every
+  build** — missing or unused imports, import order, formatting, syntax-level
+  compiler errors. Assume CI runs these; do not run them yourself. This does
+  **not** cover a semantic risk the type system *permits* (an unsafe cast, an
+  `any` escape, a dropped narrowing, a floating promise) — those stay in scope,
+  because a passing typecheck is exactly what makes them dangerous.
+- **Anything the author silenced in-code with a stated reason** next to the
+  line — `eslint-disable … -- <reason>`, `# noqa`, `// nolint`, `# type: ignore`,
+  or a comment naming the tradeoff. That is a recorded decision, not a defect. A
+  bare suppression with no reason is not, and a suppression sitting over a
+  security sink or a data-write path stays reportable either way.
 - **Behaviour changes that read as intentional** and coherent with the rest of
   the diff. "This now returns early" is a finding only when you can name what it
   breaks.
 
 **Refute your own finding first.** Before reporting, try to kill it: name the
 input, caller, ordering or configuration that makes it real. If you cannot
-substantiate it and cannot refute it, it is a hunch — drop it. The lower bar
-below widens what counts as *real*, never what counts as *stated*.
+substantiate it and cannot refute it, it is a hunch — drop it. This raises the
+*evidence* bar, not the confidence bar: a concern you can substantiate still
+ships at 60%.
 
 ## Confidence threshold (code quality)
 
-**Report findings you are ≥60% confident are real**, *provided* each is anchored
-to a specific changed line and names a concrete maintenance or correctness cost.
+**Report findings you are ≥60% confident are real**, *provided* each quotes its
+mechanism with the changed line and names a concrete maintenance or correctness
+cost.
 Design and maintainability problems are inherently probabilistic — a muddy
 abstraction, a misleading name, or a fragile edge case rarely clears 80%, and a
 blanket 80% gate is precisely what makes a review miss the quality issues it
@@ -116,25 +127,15 @@ Still exclude pure formatting and personal taste that carry no stated cost. Do
 maintainability concern stated with its cost is worth surfacing even at moderate
 confidence.
 
-## Severity (quality-local)
 
-The severity table in `worker-protocol.md` is keyed to the SPEC dimensions: its
-CRITICAL and HIGH rows are written around ACs, spec requirements, wiring and
-project rules — **none of which you may use**. Read alone, it caps every quality
-defect except a security sink at MEDIUM, and MEDIUM cannot move the verdict. So
-grade your findings by the rows below instead; they override the shared table for
-this dimension, and they are the only way a quality-only review can honestly
-reach `NEEDS WORK`.
+## Severity
 
-| Severity | A quality finding earns it when |
-|:---------|:--------------------------------|
-| CRITICAL | The changed code can lose or corrupt data; it silently discards a real failure on a production path (a swallowed exception, an unchecked exit code, a fallback that returns empty on error); or it introduces a security sink. "The suite is green" is not evidence against any of these — it is the usual condition for all three. |
-| HIGH | A resource leak, a race, or an N+1 / blocking-I/O regression on a path that actually runs in production; or a test whose green depends on ordering, environment or wall-clock, which makes every other gate in this review unreliable. |
-| MEDIUM | The same defect classes on a path that is not clearly production-reachable; a swallowed error on a secondary path; an accessibility defect on a new interactive element; a design or maintainability concern with a named, concrete cost. |
-| LOW | Dead or redundant code, unused locals, a misleading name, a stale comment, duplicated logic — real, cheap to fix, and nothing breaks today. |
+Grade by the severity table in `worker-protocol.md`. Its CRITICAL, HIGH and
+MEDIUM rows carry quality clauses alongside the spec ones, so a quality finding
+reaches CRITICAL and HIGH on its own terms — you do not need a spec to fail a
+review. Two things to hold on to:
 
-**Break ties on blast radius, not on defect kind.** A leak in a per-request
-handler and a leak in a once-at-startup path are not the same severity. Data
-loss, security, or a crash on a live path pushes up; reachable only from a
-startup path, a dev-only branch or a rare boundary pushes down. Say which in the
-`Problem:` line.
+- **"The suite is green" is not evidence against a finding.** For data loss, a
+  silently discarded failure, or a test whose green is order-dependent, a green
+  suite is the usual condition, not a refutation.
+- **Break ties on blast radius, not defect kind** — the rule under that table.
