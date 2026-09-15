@@ -50,6 +50,11 @@ reads to judge an integration-shaped defect.)
 | MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; an integration gap reachable through a now-permitted input; a test-isolation defect that can cause false positives or flakiness under reordering/parallelism; a resource leak; a swallowed error on a real path; a concurrency/race or performance regression the diff introduces; or an accessibility defect on a new interactive UI element |
 | LOW | Minor naming deviation, style mismatch, dead/redundant/duplicated code, unused locals, a soft convention deviation, or other non-blocking gap |
 
+Wiring clauses in that table (an unreachable declared mechanism; a
+partially-wired mechanism) belong to the **SPEC** dimension. A QUALITY worker
+does not apply them — it has no spec and therefore no access to the exemptions
+that make the judgement safe.
+
 ## Output format — return ONLY this
 
 Return **only your findings**, nothing else: no `Spec:`/`Base:` header, no
@@ -68,6 +73,6 @@ findings as its own line — `Wiring exempt: <symbol> — <section>: "<quote>"` 
 the dispatcher can surface it in the header. It is not a finding and does not
 count toward the verdict.
 
-If you found nothing in your group, return the literal line `No findings.` as
-your entire final message (a `Wiring exempt:` line may still precede it). That message is the only thing that travels back to
-the dispatcher.
+If you found nothing in your group, return the literal line `No findings.` —
+preceded only by any `Wiring exempt:` lines, and nothing else. That message is
+the only thing that travels back to the dispatcher.
