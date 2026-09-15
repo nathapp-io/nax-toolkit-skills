@@ -23,7 +23,7 @@ Report only concrete, objective issues, not style preferences:
   test that only passes because another test happens to clean up after it is a
   defect even when the suite is currently green.
 - **Dead / redundant code:** assignments with no effect, unreachable branches,
-  set-up the constructor already performed, unused locals introduced by the diff;
+  set-up the constructor already performed, unused locals introduced by the diff; (an added symbol that nothing calls is the SPEC worker's Wiring dimension, not this one — leave it be);
   logic duplicated from an existing helper the diff could have reused.
 - **Resource leaks:** opened files / sockets / handles / subprocesses not closed;
   timers / listeners not cleared.
