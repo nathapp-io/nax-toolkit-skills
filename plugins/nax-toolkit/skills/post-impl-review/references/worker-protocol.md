@@ -45,8 +45,8 @@ reads to judge an integration-shaped defect.)
 
 | Severity | Meaning |
 |:---------|:--------|
-| CRITICAL | AC entirely missing; implementation directly contradicts a hard spec requirement; the changed code raises/crashes at runtime for a case the spec requires to work; or a security defect the diff introduces (hardcoded secret, injection sink) |
-| HIGH | Significant drift (wrong API shape, missing constraint, wrong architectural approach); an integration defect that breaks a real collaborator the spec depends on; or a violation of a project rule explicitly marked as required/forbidden (a banned API, a hard-blocked pattern) |
+| CRITICAL | AC entirely missing; implementation directly contradicts a hard spec requirement; the changed code raises/crashes at runtime for a case the spec requires to work; a mechanism the diff declares that nothing on a production path can reach (an AC delivered to its own tests only); or a security defect the diff introduces (hardcoded secret, injection sink) |
+| HIGH | Significant drift (wrong API shape, missing constraint, wrong architectural approach); an integration defect that breaks a real collaborator the spec depends on; a partially-wired mechanism (one of several required call sites connected, or a live path gated behind a switch nothing sets); or a violation of a project rule explicitly marked as required/forbidden (a banned API, a hard-blocked pattern) |
 | MEDIUM | Partial coverage — AC present but incomplete; minor drift affecting correctness; an integration gap reachable through a now-permitted input; a test-isolation defect that can cause false positives or flakiness under reordering/parallelism; a resource leak; a swallowed error on a real path; a concurrency/race or performance regression the diff introduces; or an accessibility defect on a new interactive UI element |
 | LOW | Minor naming deviation, style mismatch, dead/redundant/duplicated code, unused locals, a soft convention deviation, or other non-blocking gap |
 
@@ -62,6 +62,12 @@ finding as a block:
   Fix: <the concrete change, or "note intentional deviation">
 ```
 
+If you are the SPEC worker (or the combined worker) and the Wiring dimension
+waived a symbol on the spec's own quoted text, emit that waiver above your
+findings as its own line — `Wiring exempt: <symbol> — <section>: "<quote>"` — so
+the dispatcher can surface it in the header. It is not a finding and does not
+count toward the verdict.
+
 If you found nothing in your group, return the literal line `No findings.` as
-your entire final message. That message is the only thing that travels back to
+your entire final message (a `Wiring exempt:` line may still precede it). That message is the only thing that travels back to
 the dispatcher.

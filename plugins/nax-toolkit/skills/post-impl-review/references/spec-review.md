@@ -98,6 +98,93 @@ assumptions hold for *every* real implementation/consumer:
 - Are there edge inputs the new tool/endpoint schema now permits (e.g. an
   explicitly empty array) that route into a broken branch?
 
+## Wiring — is the new mechanism actually reachable in production?
+
+A green test suite proves a function *works*. It does not prove anything ever
+*calls* it. The failure this dimension exists to catch is a **declared mechanism
+that cannot execute**: the code is written, the unit tests pass, the AC looks
+Covered — and nothing on a production path ever reaches it. Compliance cannot see
+this, because the covering test is itself the only caller.
+
+**Procedure.** For every production symbol the diff *adds* — function, class,
+method, route handler, CLI command or subcommand, config/flag key, event handler,
+middleware, migration, registry entry — trace outward until you reach a real
+entry point, or run out of callers:
+
+```bash
+grep -rn "<symbol>" . | grep -vE '(/tests?/|__tests__|\.test\.|\.spec\.|_test\.|_spec\.)'
+```
+
+An **entry point** is something the running system invokes on its own: an HTTP
+route mounted on the app, a CLI command registered on the dispatcher, a scheduled
+or cron job, an event/queue subscription, module top-level init, or the package's
+public export surface where the caller is external to this repo.
+
+Classify each added symbol:
+
+- **Wired** — an unbroken chain of non-test callers reaches an entry point. Name
+  the entry point; a chain you did not actually follow is not a chain.
+- **Test-only** — the only callers are tests. The mechanism is verified in
+  isolation, but production never runs it.
+- **Orphan** — no callers at all, anywhere.
+
+Test-only and Orphan are findings.
+
+**Follow the chain, don't stop at the first hop.** Reaching *a* caller is not
+reaching an entry point. If `newHandler` is called only by `buildHandlers`, you
+must then ask who calls `buildHandlers` — an orphan two levels up is still an
+orphan.
+
+### Two traps that pass a naive check
+
+**The registry trap.** Adding an entry to a registry, table, map, enum, plugin
+list or DI container is **not** wiring. It counts only once you have opened the
+*consumer* and confirmed something iterates that registry on a live path, and
+that the new entry satisfies whatever the consumer filters on. A registration
+line plus an unread consumer is exactly how a mechanism ships declared-but-inert.
+
+**The flag trap.** Code reachable only behind a feature flag, config key, env var
+or CLI option is wired only if something can actually turn it on — a default that
+enables it, a documented setting, a caller that passes it. If the diff adds the
+branch but neither the repo nor the spec provides the switch, the branch is
+unreachable: a finding, not a deferral.
+
+### Exemptions — cited text only
+
+Skip the finding when the **spec itself says so in words you can quote**:
+
+- an out-of-scope / non-goals section that names this wiring as excluded;
+- a phase, milestone or staging statement that scopes *this* implementation to
+  the unit and places the wiring in a later phase;
+- the spec declaring the symbol a public library export, plugin API or SDK
+  surface whose callers are external to this repo.
+
+**Inference is not evidence.** "This is obviously phase 2", "the wiring probably
+lands in the follow-up PR", or a commit message promising it later exempt
+nothing — only the spec's own text does. When you do apply an exemption, report
+it rather than going silent: emit the line
+
+```
+Wiring exempt: <symbol> — <spec section>: "<quoted phrase>"
+```
+
+alongside your findings, so the dispatcher can surface it in the header. A silent
+exemption is indistinguishable from a check you never ran.
+
+### Severity
+
+- **CRITICAL** — nothing on a production path reaches the symbol an AC exists to
+  deliver. That AC is effectively Missing, however good its unit tests are.
+- **HIGH** — partially wired: one of several required call sites is connected, or
+  the path exists but is gated behind a switch nothing sets.
+
+Every wiring finding must carry its evidence — the search you ran and what came
+back ("the only hits are `tests/test_router.py`"), or the exact hop where the
+caller chain ended. At the ≥80% threshold, "I could not find a caller" becomes a
+finding only after you have searched for the symbol by name across the repo and,
+where the language allows indirection (dynamic dispatch, string-keyed registries,
+reflection, DI), searched for it as a string too.
+
 ## Convention Compliance — does the diff obey the project's own rules?
 
 **Load the rules first.** Find the repo's own rule files and read every one that
