@@ -156,14 +156,18 @@ pointing at this repo or a local clone.
 
 ### OpenCode
 
-Manifest + entry at `.opencode/`. See [.opencode/INSTALL.md](./.opencode/INSTALL.md).
-Quick version — add to your `opencode.json`:
+Supports OpenCode **2.0.4+** and **1.x**. See [.opencode/INSTALL.md](./.opencode/INSTALL.md)
+for version-specific installation. For **2.0**, add to `opencode.json`:
 
 ```json
 {
-  "plugin": ["nax-toolkit@git+https://github.com/nathapp-io/nax-toolkit-skills.git"]
+  "plugins": ["git+https://github.com/nathapp-io/nax-toolkit-skills.git"]
 }
 ```
+
+OpenCode **1.18.29+** uses the singular `plugin` key and the shared package
+entry. Older **1.x** releases use the legacy function entry documented in the
+installation guide. Run `npm run test:opencode` for compatibility checks.
 
 ## Usage
 
@@ -191,8 +195,9 @@ plugins/nax-toolkit/
 .cursor-plugin/
   plugin.json        # Cursor manifest (skills → ../skills/)
 .opencode/
-  plugins/nax-toolkit.js   # OpenCode plugin: registers ../../skills
+  plugins/nax-toolkit.js   # Named V1 function + default V2 definition
   INSTALL.md
+index.js             # OpenCode V2 directory entry
 package.json         # OpenCode git-backed install entry (main)
 skills/
   nax-setup/
