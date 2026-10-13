@@ -1,6 +1,6 @@
 ---
 name: nax-finish
-description: Finalize a completed nax feature through to an opened MR/PR, or resume one that nax's finish phase escalated out of. Resolves the feature's spec from .nax/features/<name>/spec.md, .nax/specs/, docs/specs/, or the prd.json fallback, and short-circuits if the branch is already merged. Reads the nax config (root plus per-package .nax/mono/<pkg>/config.json) for the repo's real quality and acceptance commands, drives the feature's acceptance tests green, runs post-impl-review in two phases (spec, then code-quality on the stabilized diff) in isolated subagents, triaging findings with the user and fixing approved ones, runs the repo-root quality gates green, then opens a PR/MR with gh/glab or promotes nax autoPR's draft — only on explicit approval. When nax's finish phase stopped with status "escalated", loads its findings from the finish-audit artifact rather than re-deriving them, triages them, and records the rulings. Triggers: "finish this nax feature", "nax-finish escalated", "/nax-finish <feature>".
+description: Finalize a completed nax feature through to an opened MR/PR, or resume one that nax left unfinished: an escalated finish phase, or a workflow-mode draft PR. Resolves the feature spec (spec.md, .nax/specs/, docs/specs/, or prd.json fallback) and short-circuits if already merged. Reads the nax config for the repo's real quality and acceptance commands, drives acceptance tests green, runs post-impl-review in two phases (spec, then code-quality) in isolated subagents, triages findings with the user, runs the repo-root quality gates green, then opens a PR/MR with gh/glab or promotes a draft, only on explicit approval. For an escalated finish it loads findings from the finish-audit artifact; for a workflow draft it builds the open-items list from the workflow result, clears each item, and promotes the draft. Both record the rulings. Triggers: "finish this nax feature", "nax-finish escalated", "nax-finish workflow draft", "/nax-finish <feature>".
 ---
 
 # nax-finish
@@ -9,7 +9,7 @@ Finalize a completed nax feature: prove the changed feature's acceptance tests p
 
 **Order rationale:** the cheap, deterministic acceptance gate runs **before** the expensive LLM review — a feature that fails its own spec contract shouldn't consume a full review + triage. Review itself is **phased**: spec-relative review runs **first**, its drift is fixed, and only then does code-quality review run — against the now-stabilized diff, so the open-ended quality pass never judges code the spec-fixes are about to rewrite (and you never burn a triage round on throwaway lines). The heavy repo-root quality gate runs **last**, once, after all review fixes are in, so it isn't re-invalidated and re-run.
 
-**Announce at start:** "Using nax-finish to finalize `<feature>`: config → acceptance → spec-review → fix → quality-review → fix → quality-gates → PR/MR." In resume mode (Step 1b), announce instead: "Using nax-finish to resume the escalated finish of `<feature>`: acceptance → triage <n> escalated finding(s) → fix → quality-gates → PR/MR."
+**Announce at start:** "Using nax-finish to finalize `<feature>`: config → acceptance → spec-review → fix → quality-review → fix → quality-gates → PR/MR." In resume mode (Step 1b), announce instead: "Using nax-finish to resume the escalated finish of `<feature>`: acceptance → triage <n> escalated finding(s) → fix → quality-gates → PR/MR." In workflow-draft mode (Step 1c), announce instead: "Using nax-finish to take the workflow draft of `<feature>` to ready: acceptance (if enabled) → clear <n> open item(s) → fix → quality-gates → promote draft."
 
 Work through the steps in order. **Each gate is blocking** — do not advance to the next step while the current one is red, unless the user explicitly tells you to proceed. Track the steps with TodoWrite so the user can see where the run is.
 
@@ -66,6 +66,25 @@ ls -t <outputDir>/finish-audit/<featureName>/*.result.json 2>/dev/null | head -1
 - **`status: "escalated"`** → print the `escalationReason` and the findings, confirm with the user that these are still live (they may have fixed them by hand since), and on confirmation run in **resume mode**: Step 4 loads findings from the artifact instead of deriving them, and Step 8 becomes required.
 
 **Read `references/resume-from-escalation.md` before acting on an artifact** — it owns artifact discovery (the `outputDir` override, `projectKey` derivation, the `.identity` cross-check, the legacy repo-local path), the full result shape and round outcomes, and the sidecar contract.
+
+## Step 1c: Resume a workflow-mode draft (only when a workflow result exists)
+
+nax's **workflow mode** runs per-story review and fix rounds, then one branch review, one branch fix and one re-review, and publishes the PR/MR as a **draft** whenever anything needs a human. Nothing in nax takes that draft to ready. This skill does. Resume **only** when the workflow's own outcome is `draft`.
+
+Like Step 1b, this needs the resolved `featureName`. Find the newest workflow run directory (newest by mtime, or latest `featureWorkflow.startedAt`) and read its `result.json`:
+
+```bash
+ls -td .nax/features/<featureName>/workflow/*/ 2>/dev/null | head -1
+```
+
+- **No directory, unreadable, or no `featureWorkflow`** → say nothing and continue normally at Step 2. This is the ordinary case: only a workflow-mode run writes these files.
+- **`featureWorkflow.outcome` is `opened`** → the PR/MR is already ready; report its URL per Step 7's rule and stop unless the user asks for more.
+- **`skipped`** (no forge) → continue normally; Step 7 offers to open one.
+- **`draft`** → print `featureWorkflow.reasons` and the open items (built per the reference), confirm with the user that they are still live (they may have fixed some by hand since), and on confirmation run in **workflow-draft mode**: Steps 3-8 adjust as marked below, and Step 8 becomes required.
+
+If Step 1b also found an escalated finish-audit artifact, ask the user which one they mean to resume; do not merge them.
+
+**Read `references/resume-from-workflow-draft.md` before acting on an artifact** — it owns artifact discovery, the field-by-field result contract (and how to fail soft on older nax), how the open-items list is built, how each kind of item is handled, and the decisions sidecar.
 
 ## Step 2: Understand the nax config (quality + acceptance commands)
 
@@ -129,6 +148,8 @@ Run this **before** the review: it's the cheap, deterministic proof that the fea
 >
 > That lopsided score is what makes this misdiagnose so reliably: by the time the odd group fails, the root cwd has been "confirmed" five times, so the error reads as *"this package's test/config is missing"* rather than *"I'm in the wrong directory."* **Green from `repoRoot` is not evidence the approach is right — the passing groups are the ones that can't detect the mistake.** The nax runtime spawns **every** group with `cwd = <repoRoot>/<packageDir>` and an **absolute** `{{FILE}}`; **Run them** mirrors that exactly. Reproduce the runtime uniformly — never generalize from whichever groups happened to pass.
 
+> **Workflow-draft mode (Step 1c).** Workflow mode disables acceptance by default. Honour `acceptance.enabled` from `nax features resolve`: when it is `false`, print `Acceptance disabled in config — skipping.` and move on; do not generate or invent an acceptance test. When it is `true`, run it as below (the tree has changed since the workflow's gates).
+
 Branch on `acceptance.status`:
 - **`disabled`** → print `Acceptance disabled in config — skipping.` and go to Step 4.
 - **`no-prd`** → no `prd.json` resolved for the feature; acceptance targets can't be computed. List the feature dir checked and ask the user for the acceptance test path (or whether acceptance was generated at all) — do not silently skip.
@@ -174,6 +195,8 @@ Print `Acceptance: PASS (<feature> — N tests)` when green.
 
 > **Resume mode (Step 1b).** The escalated artifact already holds the review output — findings with full `problem` and `fix` prose — so **skip this step's derivation for the escalated phase**. Surface those findings verbatim (severity, title, problem, fix), state which phase escalated and how many fix rounds preceded it (`rounds[]`, which is **absent** when none ran), and carry them into Step 5 as that phase's findings. Do not re-invoke `post-impl-review` to re-derive what you already have. The other, non-escalated phase is not re-run up front either — Step 5's verification ladder re-reviews whatever your fixes actually reach. Everything else proceeds normally.
 
+> **Workflow-draft mode (Step 1c).** The workflow already ran story reviews, a branch review and a re-review, so **do not run a full `post-impl-review` by default**. Load the open items from the reference's list, surface them verbatim (id, severity, `file:line`, issue, suggestion, and any ruling joined to them), and carry them into Step 5. After fixes land, offer an optional **targeted review of the fix diff only** (see the reference); never run the phased review unprompted.
+
 Now that the feature passes its own contract, review the working code. nax-finish drives `post-impl-review` in **two phases by default**: spec-relative review first (Step 4 → spec triage in Step 5), then — after the spec drift is fixed — code-quality review on the **now-stabilized** diff (the quality phase in Step 5). Reviewing quality last means the open-ended quality pass never judges code the spec-fixes are about to rewrite, and you never burn a triage round on throwaway lines. **post-impl-review owns the phasing** via its `--phase` flag; nax-finish only decides *whether* to phase.
 
 **Decide phased vs. collapsed (this run).** Default to **phased** — a typical nax feature spans several stories and hundreds of lines, which is real spec-review surface where drift is plausible and reviewing quality on the *stabilized* diff pays off. Measure the changed diff first (you don't have a stat yet — the preflight only counted commits):
@@ -208,6 +231,8 @@ Triage runs **once per review phase**. Present each phase's findings grouped by 
   Each subagent (targeted or full) runs in fresh context and keeps the main context clean across loop iterations. Loop until no CRITICAL/HIGH remains in the phase, or the user explicitly accepts the remaining findings and tells you to proceed.
 - **Re-run the feature's acceptance tests (Step 3) whenever a fix changed code.** A review fix can break the contract Step 3 proved; the acceptance run is cheap and feature-scoped, so re-verify it green before moving on. If no code changed (all findings waived), skip the re-run.
 
+> **Workflow-draft mode (Step 1c).** Triage the open items instead of phases: findings like below (add the test the suggestion names), rulings by user confirm or override (a `defer` is not resolved), red gates made green, cannot-verify items actually verified with evidence. Fixes need explicit user approval, as above. Skip the two-phase flow; the reference has the per-kind handling.
+
 **Phase 1 — spec findings (from Step 4's `--phase spec` run).** Triage the spec-relative findings (Compliance, Drift, Integration, Convention) per the discipline above, getting acceptance green again after any fix. **Resolve or get the user to waive every CRITICAL/HIGH before running the quality phase** — stabilizing the diff first is the entire point of phasing; a quality review on code you're about to rewrite for spec reasons is wasted.
 
 **Phase 2 — quality review on the stabilized diff.** Once the spec fixes are in and acceptance is green, invoke `post-impl-review --phase quality <path>` (same resolved spec path — only used for the header; the quality worker doesn't read it) to review code-quality against the now-stable diff. Surface its verdict + findings verbatim, then triage them per the same discipline.
@@ -218,7 +243,8 @@ Do not advance to Step 6 while a CRITICAL or HIGH finding is open and unaddresse
 
 ## Step 6: Repo-root quality gates green
 
-Run the **repo-root** quality commands — every gate that is configured *and* required — from `repoRoot`, regardless of whether the repo is single-package or a monorepo:
+Run the **repo-root** quality commands — every gate that is configured *and* required — from `repoRoot`, regardless of whether the repo is single-package or a monorepo. In workflow-draft mode this is required: the tree changed after the workflow's final gates.
+
 
 For each of `build`, `typecheck`, `lint`, `test` — skipping any whose command is unset, which is the only way a gate is off — matching the gate order nax's own finish phase runs:
 ```bash
@@ -246,15 +272,19 @@ Now everything is green. Prepare the PR/MR, then either **open a new one** or **
 
 **Full mechanics live in `references/open-pr-mr.md`** — read it now and follow it. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e **detect whether a PR/MR already exists for the branch** and branch on it, 7f create a new one on approval (only when none exists), 7g promote an existing **draft → ready** on approval (leaving its autoPR body intact by default; a body refresh is offered, not forced). If a PR/MR already exists **and is already ready**, report its URL and stop — nothing to open. Leave the branch pushed if the user cancels.
 
-## Step 8: Record the resume decisions (resume mode only — required)
+> **Workflow-draft mode (Step 1c).** The PR/MR already exists as a draft, so go straight to 7g on explicit approval (use `featureWorkflow.url` when present, else 7e detection). Never rewrite the generated body. Instead **offer** to append a `## Resolved before ready` section listing each open item and its disposition; apply only on explicit approval. If any item is still unresolved and unwaived, do not promote.
 
-Skip this step entirely on an ordinary run; it applies only when Step 1b entered resume mode.
+## Step 8: Record the resume decisions (resume modes only — required)
+
+Skip this step entirely on an ordinary run; it applies only when Step 1b or Step 1c entered a resume mode.
 
 Write a sidecar beside the artifact you resumed from, recording how each escalated finding was ruled on:
 ```
 <outputDir>/finish-audit/<featureName>/<runId>.decisions-<timestamp>.json
 ```
 One entry per finding in the artifact — **every** finding, waivers included — each with a one-line `reason`, plus the resume's `outcome`. **Shape and field rules live in `references/resume-from-escalation.md`**; follow it rather than improvising the JSON.
+
+**Workflow-draft mode (Step 1c).** Write the sidecar beside the result instead: `.nax/features/<featureName>/workflow/<runId>/decisions-<timestamp>.json` — one entry per open item (id, kind, disposition `fixed`/`waived`/`confirmed`/`overridden`/`verified`, one-line reason, commit sha when fixed), plus `outcome` (`promoted` or `abandoned`) and `url`. Shape lives in `references/resume-from-workflow-draft.md`. It is a repo-local `.nax` file: run `git check-ignore` on it, tell the user where it is, and do not commit it unless the repo tracks that directory.
 
 Write it as soon as triage is done and any fixes are committed. **Do not defer it past Step 7** — if the user abandons the PR at the approval gate, the judgments they just made are still worth keeping: write the sidecar with `outcome: "abandoned"` and no `url`. This file is the only record that a human ever ruled on these findings; nothing in nax writes it, and an unwritten one cannot be reconstructed.
 
@@ -271,6 +301,11 @@ In resume mode, report the escalation's disposition instead of a review verdict,
 nax-finish: <feature> — resumed escalation (3 findings: 1 fixed, 2 waived) · acceptance PASS · quality PASS · MR opened: <url>
   decisions: <outputDir>/finish-audit/<feature>/<runId>.decisions-<timestamp>.json
 ```
+In workflow-draft mode, report the open items' disposition and name the sidecar:
+```
+nax-finish: <feature> — resumed workflow draft (2 items: 1 fixed, 1 verified) · quality PASS · PR promoted to ready: <url>
+  decisions: .nax/features/<feature>/workflow/<runId>/decisions-<timestamp>.json
+```
 If any gate was waived by the user, say so explicitly in the summary rather than implying a clean pass.
 
 ## Common mistakes
@@ -282,6 +317,11 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Resuming from an artifact whose status isn't `escalated` | Gate strictly on `escalated`; `opened`/`promoted`/`already-ready` are finished runs (Step 1b) |
 | Skipping acceptance or the quality gates because the finish phase already ran them | It ran them against a tree that has since changed — both re-run in resume mode (Steps 3, 6) |
 | Finishing a resume without writing the decisions sidecar | It is the only record of the human ruling — write it even when the PR is abandoned (Step 8) |
+| Promoting a workflow draft without clearing its open items | The draft means something needs a human; promote only when every item is fixed, verified, confirmed, or explicitly waived (Step 1c) |
+| Re-running a full post-impl-review on a workflow draft | The workflow already reviewed; load the open items and offer only a targeted review of the fix diff (Steps 4-5) |
+| Treating a `defer` ruling as resolved | `defer` points at a step that has already passed; get the user to fix it, accept the risk, or file it elsewhere (Step 5) |
+| Skipping cannot-verify ledger items | Run the named tests or read the code and report evidence; waive only with a stated reason (Step 5) |
+| Overwriting the generated PR body when promoting a workflow draft | Leave it intact; offer to append a "Resolved before ready" section (Step 7g) |
 | Hand-resolving the spec with `ls`/`find` when `nax features resolve` exists | Run `nax features resolve "<args>" --json` and branch on `status`; only hand-resolve via the documented Fallback when the command is unavailable on older nax (Step 1) |
 | Hardcoding `bun test` / `npm run lint` | Read `quality.commands.*` and `acceptance.command` from config (Step 2) |
 | Running the whole acceptance suite | Scope to the changed feature's acceptance file(s) (Step 3) |
