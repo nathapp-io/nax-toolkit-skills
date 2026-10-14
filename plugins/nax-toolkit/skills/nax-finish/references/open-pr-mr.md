@@ -78,7 +78,7 @@ An MR that appears in query 1 but **not** in query 2 is already **ready**. GitLa
 Branch on the result:
 - **No existing PR/MR** → go to **7f (create)**.
 - **Exists and is a draft** → go to **7g (promote draft → ready)**.
-- **Exists and is already ready** (not a draft) → **report and stop.** Print the existing URL and note it's already open and ready — there is nothing to open. Do **not** create a duplicate and do **not** silently rewrite its body. (You may offer to refresh its body per 7g's optional body step if the user asks, but default to leaving it as-is.) This is a clean success — carry the URL into the final summary.
+- **Exists and is already ready** (not a draft) → read its live checks first (`gh pr checks <url> --json name,state,bucket` / `glab ci status --branch <branch>`). A red check is not a clean finish: fix it from its log, push, and wait for green, or have the user waive it by name. Then **report and stop.** Print the existing URL and note it's already open and ready — there is nothing to open. Do **not** create a duplicate and do **not** silently rewrite its body. (You may offer to refresh its body per 7g's optional body step if the user asks, but default to leaving it as-is.) This is a clean success — carry the URL into the final summary.
 
 ## 7f. Create a new PR/MR (only when none exists)
 

@@ -4,7 +4,10 @@ nax's **workflow mode** (config `workflow`, or a profile that enables it) runs, 
 
 When a draft result exists for the feature, Step 4's review derivation is **already done** — the story reviews, the branch review and the re-review all ran — so resume loads the open items from the artifacts instead of paying for a fresh review, and triages them under the skill's normal Step 5 discipline.
 
-Resume applies **only** to `featureWorkflow.outcome == "draft"`. `opened` means the PR/MR is already ready (nothing to do — report it per Step 7's rule); `skipped` means no forge was detected (continue normally; Step 7 offers to open one). Anything else, or no artifact, is the ordinary case.
+Resume applies to `featureWorkflow.outcome == "draft"` and, in **ready-audit mode**, to `ready`.
+- `ready` (older nax: `opened`) means the PR/MR is already ready. Build the same open-items list, verify it, and fix what it finds, but skip promotion; see "Ready-audit mode" below.
+- `local-only` / `pushed` (older nax: `skipped`) mean no PR/MR was opened; continue normally, and Step 7 offers to open one.
+- Anything else, or no artifact, is the ordinary case.
 
 **Prefer the verdict when nax writes one.** nax#2496 proposes a top-level `workflowPassed` and `openItems[]` in `result.json`. When present, read them first and treat `openItems[]` as the authoritative list; still cross-check it against the fields below. When absent (older nax), derive everything from the fields below. Every field in this document may be missing on an older nax — **fail soft**: use what is there and tell the user plainly what was missing (e.g. "no `url` in the result — will detect the PR by branch", "no ids in `branch-review.json` — matched findings by file:line").
 
@@ -46,7 +49,7 @@ Read with your own file-reading tool; `jq` is fine where it exists but do not de
 | `featureWorkflow.repoGates`, `finalGates` | `{ ran[], failing[] }`. `finalGates` ran after the branch fix and is the one that matters. |
 | `featureWorkflow.ci` | `green` \| `failed` \| `pending` \| `skipped` — the CI wait's verdict at publish time. It is a snapshot: re-read the PR's live checks (below) before trusting it. |
 | `featureWorkflow.flaggedDecisions` | Advisor decision ids flagged for a human (e.g. `["D-1", "D-2"]`). |
-| `featureWorkflow.outcome` | `draft` \| `opened` \| `skipped`. |
+| `featureWorkflow.outcome` | `ready` \| `draft` \| `local-only` \| `pushed` (`FeatureOutcome`; older nax wrote `opened` for `ready` and `skipped` for no forge). |
 | `featureWorkflow.url` | The PR/MR. May be absent on older nax; fall back to branch detection (Step 7e). |
 | `featureWorkflow.timings`, `tokensByRole` | Informational. |
 
@@ -156,13 +159,31 @@ Resume is the only place a human ruling on a workflow draft is captured. Write a
 - An `advisor` entry's `reason` carries the verification evidence (the commit read, the test run and its result); a `ci` entry's carries the check name, the root cause and the head sha it went green on.
 - `disposition` is `fixed` (code changed, `sha` required) \| `waived` (judged not a defect or accepted risk) \| `confirmed` (ruling upheld) \| `overridden` (ruling reversed) \| `verified` (cannot-verify or already-fixed item, with evidence in `reason`).
 - `reason` is one line, always.
-- `outcome` is `promoted` \| `abandoned`. Write the file even when abandoned (no `url` then, or the draft's url if known). Do not defer it past Step 7.
+- `outcome` is `promoted` \| `verified-ready` (ready-audit mode, PR left ready) \| `abandoned`. Write the file even when abandoned (no `url` then, or the draft's url if known). Do not defer it past Step 7.
 
 **It is a repo-local `.nax` file.** Run `git check-ignore -v <sidecar path>`: when ignored (the usual case for `.nax/`), leave it uncommitted and tell the user where it is. Commit it only when the repo tracks that directory, and only with approval.
 
 ## Promotion
 
-Step 7g promotes the existing draft on explicit approval. Beyond 7g's default of leaving the generated body untouched, **offer** to append a `## Resolved before ready` section to the PR/MR body listing each open item and its disposition (label, one-line outcome, commit sha when fixed). Append only; never rewrite the generated body. Read the current body (`gh pr view <branch> --json body`), add the section, and write it back only on explicit approval.
+Step 7g promotes the existing draft on explicit approval, once the PR's checks are green on the pushed head. Record what was cleared in two places, both only on explicit approval:
+
+1. **Tick the body checklist** — a targeted edit of the generated "Before marking ready" list, nothing else.
+   1. Read the body: `gh pr view <url> --json body -q .body`, or `glab mr view <iid> --output json`.
+   2. For each resolved item, change its line `- [ ] **<id>** (<kind>) — …` to `- [x] **<id>** (<kind>) — …` and append ` — fixed in <sha>`, ` — verified`, ` — confirmed` or ` — waived: <reason>`.
+   3. Write it back: `gh pr edit <url> --body-file <file>`, or `glab mr update <iid> --description …`.
+
+   Leave an unresolved item unticked (it blocks promotion anyway). Never reword, reorder or delete any other line of the generated body.
+2. **Post one evidence comment** — `gh pr comment <url> --body-file <file>` or `glab mr note <iid> -m …`, headed `## Resolved before ready`. Write one line per item: label, kind, disposition, and the evidence (commit sha, the test command and its result, the CI run link, the verified premise of an advisor decision). It mirrors the decisions sidecar; one comment per finish pass, never one per item.
+
+## Ready-audit mode
+
+For `featureWorkflow.outcome == "ready"` the PR/MR is already ready. That is usually an advisor's approval: nax asks the advisor when no deterministic reason holds the PR back. So it gets the same scrutiny as a draft:
+
+- **Build the list as for a draft.** Include every advisor decision; the **readiness approval itself** is one (`kind: "finish-approval"` in `nax advisor list`, its `rationale` is the advisor's case for ready). Include the ledger cannot-verify lines, and red or pending live CI checks. `reviewOpen` and failing gates are normally empty here; include them if not.
+- **Verify each item** as described under "Handling each kind".
+- **Nothing open** → report the PR clean, with the evidence (decisions verified, checks green on `<sha>`), and stop. Write the sidecar with `outcome: "verified-ready"`.
+- **Something open** → triage and fix it as for a draft, pushing to the same PR. A blocking item is a red required check, an advisor decision whose premise is false, or a CRITICAL/HIGH defect. For one of those, **offer** to convert the PR back to draft while it is fixed (`gh pr ready <url> --undo` / `glab mr update <iid> --draft`); re-promote through 7g once it is cleared. Never change the PR's state without the user's approval.
+- **Recording.** A ready PR's body has no checklist, so do not edit the body. Post the evidence comment headed `## Verified after ready`, and write the sidecar with `outcome: "verified-ready"` or, if it went back to draft and was re-promoted, `"promoted"`.
 
 ## Common mistakes
 
@@ -174,7 +195,9 @@ Step 7g promotes the existing draft on explicit approval. Beyond 7g's default of
 | Treating `CI failed` as unexplained, or promoting on green local gates while CI is red | Read the failing job's log, fix the cause, push, and wait for the checks on the new head |
 | Treating a `defer` ruling as resolved | `defer` points at a step that has already passed; it needs a human decision now |
 | Skipping cannot-verify items | Run the named tests or read the code and report evidence; waive only with a stated reason |
-| Overwriting the generated PR body | Leave it intact; offer to append a "Resolved before ready" section |
+| Overwriting the generated PR body | Tick only the resolved checklist lines; put the evidence in one PR comment |
+| Treating outcome `ready` as nothing to do | Run ready-audit mode: verify the decisions (the readiness approval included), the cannot-verify lines and live CI |
+| Branching on `opened` / `skipped` only | nax writes `ready` / `draft` / `local-only` / `pushed`; accept the old names as aliases |
 | Assuming the one reason from the example | Reasons vary (rulings, open findings, red gates, incomplete stories, cannot-verify); build the list from every field and cross-check against `reasons[]` |
 | Treating a missing field as an error | Older nax omits `url`, ids, and the top-level verdict; fail soft and say what was missing |
 | Picking the run dir by name | Newest by mtime, or latest `featureWorkflow.startedAt` |

@@ -78,7 +78,8 @@ ls -td .nax/features/<featureName>/workflow/*/ 2>/dev/null | head -1
 ```
 
 - **No directory, unreadable, or no `featureWorkflow`** → say nothing and continue normally at Step 2. This is the ordinary case: only a workflow-mode run writes these files.
-- **`featureWorkflow.outcome` is `opened`** → the PR/MR is already ready; report its URL per Step 7's rule and stop unless the user asks for more.
+- **`featureWorkflow.outcome` is `ready`** (written as `opened` by older nax) → the PR/MR is already ready, but "ready" is often an advisor's call (nax asks the advisor for approval when nothing deterministic holds the PR back). Run in **ready-audit mode**: the same open-items list minus promotion. Verify every advisor decision, the readiness approval included; verify the ledger cannot-verify lines; and read the PR's live CI checks. Nothing open → report it clean, with the evidence, and stop. Something open → triage it like a draft item, push fixes to the same PR, and record it as below. For a blocking item, **offer** to convert the PR back to draft (`gh pr ready --undo` / `glab mr update <iid> --draft`) while it is fixed, then re-promote. Never flip it without the user's approval.
+- **`local-only`** (no forge, push failed, or `workflow.publish: none`) or **`pushed`** (`workflow.publish: push`; branch pushed, no PR) — `skipped` on older nax → continue normally; Step 7 offers to open one.
 - **`skipped`** (no forge) → continue normally; Step 7 offers to open one.
 - **`draft`** → print `featureWorkflow.reasons` and the open items (built per the reference), confirm with the user that they are still live (they may have fixed some by hand since), and on confirmation run in **workflow-draft mode**: Steps 3-8 adjust as marked below, and Step 8 becomes required.
 
@@ -284,7 +285,11 @@ Now everything is green. Prepare the PR/MR, then either **open a new one** or **
 
 **Full mechanics live in `references/open-pr-mr.md`** — read it now and follow it. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e **detect whether a PR/MR already exists for the branch** and branch on it, 7f create a new one on approval (only when none exists), 7g promote an existing **draft → ready** on approval (leaving its autoPR body intact by default; a body refresh is offered, not forced). If a PR/MR already exists **and is already ready**, report its URL and stop — nothing to open. Leave the branch pushed if the user cancels.
 
-> **Workflow-draft mode (Step 1c).** The PR/MR already exists as a draft, so go straight to 7g on explicit approval (use `featureWorkflow.url` when present, else 7e detection). Never rewrite the generated body. Instead **offer** to append a `## Resolved before ready` section listing each open item and its disposition; apply only on explicit approval. If any item is still unresolved and unwaived, do not promote. **The PR's checks must be green on the head you pushed before 7g runs** (the reference's `ci` item): wait for them after your push, and never promote over a red required check unless the user explicitly waives it by name.
+> **Workflow-draft mode (Step 1c).** The PR/MR already exists as a draft, so go straight to 7g on explicit approval (use `featureWorkflow.url` when present, else 7e detection). Record what was cleared in two places, both on explicit approval, after the fixes are pushed and CI is green:
+> - **Tick the body checklist.** Edit only the generated "Before marking ready" lines: `- [ ] **<id>** …` → `- [x] **<id>** …` plus ` — fixed in <sha>` / ` — verified` / ` — waived: <reason>`. Never rewrite any other part of the body.
+> - **Post one evidence comment** (`## Resolved before ready`): one line per item with its disposition and evidence (commit sha, test command and result, CI run link), mirroring the decisions sidecar.
+>
+> In ready-audit mode (Step 1c, outcome `ready`) there is no checklist, so post the comment only, headed `## Verified after ready`. If any item is still unresolved and unwaived, do not promote. **The PR's checks must be green on the head you pushed before 7g runs** (the reference's `ci` item): wait for them after your push, and never promote over a red required check unless the user explicitly waives it by name.
 
 ## Step 8: Record the resume decisions (resume modes only — required)
 
@@ -333,7 +338,8 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Re-running a full post-impl-review on a workflow draft | The workflow already reviewed; load the open items and offer only a targeted review of the fix diff (Steps 4-5) |
 | Treating a `defer` ruling as resolved | `defer` points at a step that has already passed; get the user to fix it, accept the risk, or file it elsewhere (Step 5) |
 | Skipping cannot-verify ledger items | Run the named tests or read the code and report evidence; waive only with a stated reason (Step 5) |
-| Overwriting the generated PR body when promoting a workflow draft | Leave it intact; offer to append a "Resolved before ready" section (Step 7g) |
+| Overwriting the generated PR body when promoting a workflow draft | Tick only the resolved checklist lines; put the evidence in one PR comment (Step 7) |
+| Treating a workflow outcome of `ready` as finished | Ready is often an advisor's approval; run the ready audit (decisions, cannot-verify, live CI) and report clean only with evidence (Step 1c) |
 | Hand-resolving the spec with `ls`/`find` when `nax features resolve` exists | Run `nax features resolve "<args>" --json` and branch on `status`; only hand-resolve via the documented Fallback when the command is unavailable on older nax (Step 1) |
 | Hardcoding `bun test` / `npm run lint` | Read `quality.commands.*` and `acceptance.command` from config (Step 2) |
 | Running the whole acceptance suite | Scope to the changed feature's acceptance file(s) (Step 3) |
