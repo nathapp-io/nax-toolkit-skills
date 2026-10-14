@@ -97,7 +97,8 @@ A draft PR/MR is already open (from autoPR) — the remaining action is to mark 
 
 1. Show the user the existing PR/MR: its URL, title, current draft state, and that the branch now carries all the review/quality fixes you just pushed (7b). State that you'll flip it to **ready**.
 2. **Offer** (don't force) a body refresh: you composed a fresh spec body in 7d — offer to update the PR/MR description to it. Only overwrite the existing autoPR body **if the user explicitly approves**; otherwise leave it as-is.
-3. **Only after explicit approval**, promote it (and, if approved in step 2, update the body first):
+3. **Check CI before promoting.** Read the PR's checks on the head you just pushed (`gh pr checks <branch> --json name,state,bucket` / `glab ci status --branch <branch>`). Wait for pending checks to finish. If any required check is red, do not promote: fix it from its log (workflow drafts: the reference's `ci` item), push, and check again. Promote over a red check only when the user explicitly waives that check by name.
+4. **Only after explicit approval**, promote it (and, if approved in step 2, update the body first):
 ```bash
 # GitHub — optional body refresh, then mark ready
 gh pr edit "<branch>" --title "<title>" --body "<body>"   # only if user approved a refresh

@@ -44,6 +44,8 @@ Read with your own file-reading tool; `jq` is fine where it exists but do not de
 | `featureWorkflow.minors[]`, `newMinors[]` | Low-severity notes. Surface the count; they are not open items unless a ruling flags them. |
 | `featureWorkflow.reasons[]` | Why the PR is a draft, in nax's words (e.g. `1 ruling(s) flagged for a human`). Treat every reason generically — do not assume only one kind exists. |
 | `featureWorkflow.repoGates`, `finalGates` | `{ ran[], failing[] }`. `finalGates` ran after the branch fix and is the one that matters. |
+| `featureWorkflow.ci` | `green` \| `failed` \| `pending` \| `skipped` — the CI wait's verdict at publish time. It is a snapshot: re-read the PR's live checks (below) before trusting it. |
+| `featureWorkflow.flaggedDecisions` | Advisor decision ids flagged for a human (e.g. `["D-1", "D-2"]`). |
 | `featureWorkflow.outcome` | `draft` \| `opened` \| `skipped`. |
 | `featureWorkflow.url` | The PR/MR. May be absent on older nax; fall back to branch detection (Step 7e). |
 | `featureWorkflow.timings`, `tokensByRole` | Informational. |
@@ -57,6 +59,10 @@ Read with your own file-reading tool; `jq` is fine where it exists but do not de
 _run: feature draft <url>: <reasons>
 ```
 
+**Advisor decisions** have their own source of truth: `nax advisor list -f <feature> --json` lists every decision for the feature, flagged first, including the **trusted** ones nax applied without asking (for example a `waive` or `accept-risk` the advisor was confident about) and pre-flight rulings. On an older nax without the command, read `.nax/features/<feature>/decisions.jsonl` (one JSON object per line: `id`, `kind`, `action { type, reason }`, `needsHumanConfirm`, `confidence`, `rationale`, `auditRef`).
+
+**CI** is read live from the forge, not only from `featureWorkflow.ci`: `gh pr checks <url-or-branch> --json name,state,bucket,link` (GitHub) or `glab ci status --branch <branch>` (GitLab).
+
 A `cannot-verify` line is something the workflow could not check itself (a runtime behaviour, an external service, a manual step). The `feature draft` line repeats the reasons and, on older nax, may be the only place the URL appears.
 
 ## Building the open-items list
@@ -64,11 +70,12 @@ A `cannot-verify` line is something the workflow could not check itself (a runti
 The open items are the **union** of the following, de-duplicated by finding id (else by file:line plus issue text). Give each a stable label (`B3`, `US-004`, `gate:lint`, `cv-1`) used in triage and in the sidecar.
 
 1. **`reviewOpen[]`** — each entry is a finding item.
-2. **Rulings with `needsHumanConfirm: true`** — a ruling item. Join it to its finding via `findingId` (in `reviewOpen`, `branch-review.json`, or `branch-rereview.json` `newFindings`) so the user sees the ruling and the finding together. A ruling with no matching finding is still an item; show its `text`.
+2. **Advisor decisions — all of them.** One `advisor` item per decision from `nax advisor list -f <feature> --json` (else `decisions.jsonl`), plus each `featureWorkflow.rulings[]` entry, de-duplicated by `decisionId`. Join each to its finding via `findingId` (in `reviewOpen`, `branch-review.json`, or `branch-rereview.json` `newFindings`) so the user sees the decision and the finding together; a decision with no matching finding is still an item. Mark each as **flagged** (`needsHumanConfirm: true`) or **trusted** (applied without asking). Trusted decisions are listed too: they shaped the branch without a human ever seeing them.
 3. **Re-review leftovers** — `branch-rereview.json` `newFindings[]`, and `verdicts[]` with `addressed: false`, that are not already in `reviewOpen`. These are the usual source of a draft: the one branch fix introduced or exposed something and no step remained to handle it.
 4. **Red `finalGates.failing[]`** — one gate item per failing gate. Include `repoGates.failing` only if `finalGates` is missing.
 5. **Stories not `complete`** — one item per story, with its state.
 6. **Ledger `cannot-verify` lines** — one item each, keyed by story id (or `_run`).
+7. **Red or pending CI** — one `ci` item per failing check on the PR's current head (from the live checks above), and one item when `featureWorkflow.ci` is `failed` or `pending` but the live checks cannot be read. A `CI failed` reason is explained only by these items.
 
 Cross-check against `reasons[]`: every reason should be explained by at least one item. A reason with no matching item is itself surfaced to the user as an unexplained draft reason — do not drop it. If the union is empty and the outcome is still `draft`, say so and ask the user whether to proceed straight to the gates and promotion.
 
@@ -79,8 +86,22 @@ Print the list grouped by kind, each with its label, severity, `file:line`, the 
 Fixes need explicit user approval, as everywhere in this skill. Hold item judgments until the user has seen the list.
 
 - **Finding (`reviewOpen`, re-review leftovers)** — triage like Step 5: recommend a fix for CRITICAL/HIGH and for clear low-risk MEDIUM, state LOW. On approval, apply the change the `suggestion` names, **and add the test it names** (a finding whose suggestion mentions a missing test is not fixed until that test exists and passes). The user may waive a finding as an intentional deviation; record `waived` with the reason. Never mark a finding fixed without a commit.
-- **Ruling (`needsHumanConfirm`)** — a human decision, not a defect. Show the ruling `text`, `why`, and `costIfWrong`, then ask the user to **confirm** it (`confirmed`) or **override** it (`overridden`; if the override means code changes, handle it as a finding too). A `defer` ruling is **not resolved**: it points at a later step, and in a workflow draft no later step remains. Treat `defer` as "needs a human now" — fix it, or have the user explicitly accept the risk or file it elsewhere (record where in the `reason`). Never carry a `defer` forward as done.
+- **Advisor decision** — a judgment, not a defect, and its rationale is only as good as what the advisor checked (it often says so: "I did not run the tests"). **Verify the premise before anyone confirms it:**
+  - "already fixed by `<sha>`" → `git show <sha>`, read the changed code at the finding's `file:line`, and run the test the finding names (or the nearest scoped test); state whether the fix covers the whole finding or only part of it.
+  - "out of scope" / "not required" → find the spec or PRD line that says so.
+  - `accept-risk` / `waive` → read the code and confirm the risk described is the real one, no larger.
+  - `hold` / `fix` → confirm the defect exists at `file:line` (a probe or failing test is the strongest evidence).
+
+  Then show the user the decision (`text`, `why`, `costIfWrong`) **with your verification evidence**:
+  - **Flagged** — ask the user to **confirm** it (`confirmed`) or **override** it (`overridden`; if the override means code changes, handle it as a finding too).
+  - **Trusted** — list it as `verified` when the premise held. When it did not, raise it to the user as an override candidate; never leave a trusted decision with a false premise standing silently.
+  - A `defer` is **not resolved**: it points at a later step, and in a workflow draft no later step remains. Treat `defer` as "needs a human now" — fix it, or have the user explicitly accept the risk or file it elsewhere (record where in the `reason`). Never carry a `defer` forward as done.
 - **Red gate** — reproduce the failing gate with the repo's own command from Step 2, show the output, fix with approval, and re-run until green. Step 6 re-runs every gate anyway; this item is closed only when its gate is green there.
+- **Red CI check (`ci`)** — the local gates being green does not clear it; CI runs things they do not (e2e, other OSes, services).
+  1. Read the failing job's log: `gh run view <run-id> --job <job-id> --log-failed` (the ids are in the check's `link`), or the GitLab job trace.
+  2. Find the root cause in the log (for example a 429 from a rate-limited endpoint, a missing service, a flaky timeout) before proposing anything; do not re-run blindly. A check that cannot run on this host (e2e under a macOS sandbox) is still fixed from its CI log.
+  3. Fix it with approval, commit, push, and **wait for the checks on the new head** (`gh pr checks <url> --watch`, or poll the status). Re-run a job only when the log shows an infrastructure flake, and say so in the `reason`.
+  4. The item closes only when that check is green on the pushed head, or the user explicitly waives it by name (`waived`, with the reason).
 - **Story not complete** — read the story's dir (`US-00N/`) and the PRD for what is missing; treat the gap as a finding against the spec (propose a fix, with approval) or have the user waive it.
 - **Cannot-verify** — do not wave it through. Actually verify it now: run the tests or commands the text names, read the code paths it refers to, and report concrete evidence (command and result, or file:line). `verified` requires evidence in the `reason`. If it genuinely cannot be checked here (needs a deployed environment, a human with credentials), say so and let the user decide: record `waived` with that reason, or leave the draft.
 
@@ -131,7 +152,8 @@ Resume is the only place a human ruling on a workflow draft is captured. Write a
 ```
 
 - One entry per open item — **every** item, waivers and already-fixed ones included.
-- `kind` is `finding` \| `ruling` \| `gate` \| `story` \| `cannot-verify`.
+- `kind` is `finding` \| `advisor` \| `gate` \| `ci` \| `story` \| `cannot-verify` (`ruling`, written by earlier versions of this skill, means `advisor`).
+- An `advisor` entry's `reason` carries the verification evidence (the commit read, the test run and its result); a `ci` entry's carries the check name, the root cause and the head sha it went green on.
 - `disposition` is `fixed` (code changed, `sha` required) \| `waived` (judged not a defect or accepted risk) \| `confirmed` (ruling upheld) \| `overridden` (ruling reversed) \| `verified` (cannot-verify or already-fixed item, with evidence in `reason`).
 - `reason` is one line, always.
 - `outcome` is `promoted` \| `abandoned`. Write the file even when abandoned (no `url` then, or the draft's url if known). Do not defer it past Step 7.
@@ -148,6 +170,8 @@ Step 7g promotes the existing draft on explicit approval. Beyond 7g's default of
 |:--|:--|
 | Promoting the draft without clearing its open items | The draft exists because something needs a human; promote only when every item is fixed, verified, confirmed, or explicitly waived |
 | Re-running a full `post-impl-review` | The workflow already reviewed; load the open items, and offer only a targeted review of the fix diff |
+| Confirming an advisor decision on its own rationale | Verify the premise (commit, code, test) first and show the evidence; list trusted decisions too |
+| Treating `CI failed` as unexplained, or promoting on green local gates while CI is red | Read the failing job's log, fix the cause, push, and wait for the checks on the new head |
 | Treating a `defer` ruling as resolved | `defer` points at a step that has already passed; it needs a human decision now |
 | Skipping cannot-verify items | Run the named tests or read the code and report evidence; waive only with a stated reason |
 | Overwriting the generated PR body | Leave it intact; offer to append a "Resolved before ready" section |
