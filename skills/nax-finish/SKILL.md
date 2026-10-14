@@ -69,7 +69,7 @@ ls -t <outputDir>/finish-audit/<featureName>/*.result.json 2>/dev/null | head -1
 
 ## Step 1c: Resume a workflow-mode draft (only when a workflow result exists)
 
-nax's **workflow mode** runs per-story review and fix rounds, then one branch review, one branch fix and one re-review, and publishes the PR/MR as a **draft** whenever anything needs a human. Nothing in nax takes that draft to ready. This skill does. Resume **only** when the workflow's own outcome is `draft`.
+nax's **workflow mode** runs per-story review and fix rounds, then one branch review, one branch fix and one re-review, and publishes the PR/MR as a **draft** whenever anything needs a human, or as **ready** when nothing deterministic holds it back and the advisor approves (the `finish-approval` decision). Nothing in nax takes a draft to ready, and nothing re-checks an advisor-approved ready PR. This skill does both: it resumes on outcome `draft` (workflow-draft mode) and audits outcome `ready` (ready-audit mode).
 
 Like Step 1b, this needs the resolved `featureName`. Find the newest workflow run directory (newest by mtime, or latest `featureWorkflow.startedAt`) and read its `result.json`:
 
@@ -78,9 +78,11 @@ ls -td .nax/features/<featureName>/workflow/*/ 2>/dev/null | head -1
 ```
 
 - **No directory, unreadable, or no `featureWorkflow`** → say nothing and continue normally at Step 2. This is the ordinary case: only a workflow-mode run writes these files.
-- **`featureWorkflow.outcome` is `opened`** → the PR/MR is already ready; report its URL per Step 7's rule and stop unless the user asks for more.
-- **`skipped`** (no forge) → continue normally; Step 7 offers to open one.
+- **`featureWorkflow.outcome` is `ready`** (written as `opened` by older nax) → the PR/MR is already ready, but "ready" is often an advisor's call (nax asks the advisor for approval when nothing deterministic holds the PR back). Run in **ready-audit mode**: the same open-items list minus promotion. Verify every advisor decision, the readiness approval included; verify the ledger cannot-verify lines; and read the PR's live CI checks. Nothing open → report it clean, with the evidence, and stop. Something open → triage it like a draft item, push fixes to the same PR, and record it as below. For a blocking item, **offer** to convert the PR back to draft (`gh pr ready --undo` / `glab mr update <iid> --draft`) while it is fixed, then re-promote. Never flip it without the user's approval.
+- **`local-only`** (no forge, push failed, or `workflow.publish: none`) or **`pushed`** (`workflow.publish: push`; branch pushed, no PR) — `skipped` on older nax → continue normally; Step 7 offers to open one.
 - **`draft`** → print `featureWorkflow.reasons` and the open items (built per the reference), confirm with the user that they are still live (they may have fixed some by hand since), and on confirmation run in **workflow-draft mode**: Steps 3-8 adjust as marked below, and Step 8 becomes required.
+
+**Ready-audit mode** follows the workflow-draft markers below for Steps 3, 4, 5, 6 and 8, and skips only the promotion in 7f/7g. So acceptance (Step 3) and the repo-root gates (Step 6) still run. A **blocking item** in ready-audit mode is a red required CI check, an advisor decision whose premise turned out false, or a CRITICAL/HIGH finding; only those make the skill offer to convert the PR back to draft.
 
 If Step 1b also found an escalated finish-audit artifact, ask the user which one they mean to resume; do not merge them.
 
@@ -148,12 +150,17 @@ Run this **before** the review: it's the cheap, deterministic proof that the fea
 >
 > That lopsided score is what makes this misdiagnose so reliably: by the time the odd group fails, the root cwd has been "confirmed" five times, so the error reads as *"this package's test/config is missing"* rather than *"I'm in the wrong directory."* **Green from `repoRoot` is not evidence the approach is right — the passing groups are the ones that can't detect the mistake.** The nax runtime spawns **every** group with `cwd = <repoRoot>/<packageDir>` and an **absolute** `{{FILE}}`; **Run them** mirrors that exactly. Reproduce the runtime uniformly — never generalize from whichever groups happened to pass.
 
-> **Workflow-draft mode (Step 1c).** Workflow mode disables acceptance by default. Honour `acceptance.enabled` from `nax features resolve`: when it is `false`, print `Acceptance disabled in config — skipping.` and move on; do not generate or invent an acceptance test. When it is `true`, run it as below (the tree has changed since the workflow's gates).
+> **Workflow-draft mode (Step 1c).** Workflow mode turns acceptance off for its own run (the run log says `execution.mode "workflow" overrides: acceptance.enabled=false`), but `nax features resolve` reports the **project** config, so it can say `enabled: true` for a feature whose run never generated a test. Honour it this way:
+> - `enabled: false` → print `Acceptance disabled in config — skipping.` and move on.
+> - `enabled: true` → run every group whose `exists` is `true`, as below (the tree has changed since the workflow's gates).
+> - A group with `exists: false` is **expected** here, not a defect: print `Acceptance not generated in workflow mode — skipping <testPath>.` and proceed. Do not stop to ask, and never generate or invent an acceptance test.
+>
+> Report a skipped group in the final summary as `acceptance skipped (not generated by workflow)`, never as a pass.
 
 Branch on `acceptance.status`:
 - **`disabled`** → print `Acceptance disabled in config — skipping.` and go to Step 4.
 - **`no-prd`** → no `prd.json` resolved for the feature; acceptance targets can't be computed. List the feature dir checked and ask the user for the acceptance test path (or whether acceptance was generated at all) — do not silently skip.
-- **`ok`** → run **each** group whose `exists` is `true`, per **Run them** below. A feature spanning `apps/api` + `apps/web` yields two groups — **all** existing groups must pass, and each runs in **its own** `packageDir` with **its own** `command`/`language` (the two groups routinely use different runners: `uv run pytest` in `apps/api`, `bun vitest` in `apps/web`). If a group has `exists: false`, its test file was expected (canonical path) but never generated — surface that to the user rather than skipping silently.
+- **`ok`** → run **each** group whose `exists` is `true`, per **Run them** below. A feature spanning `apps/api` + `apps/web` yields two groups — **all** existing groups must pass, and each runs in **its own** `packageDir` with **its own** `command`/`language` (the two groups routinely use different runners: `uv run pytest` in `apps/api`, `bun vitest` in `apps/web`). If a group has `exists: false`, its test file was expected (canonical path) but never generated — surface that to the user rather than skipping silently (except in workflow-draft and ready-audit modes, where it is expected; see the note below).
 
 > **Fallback (older nax — no `acceptance` block in the resolve output).** If the Step 1 output lacks an `acceptance` field (older nax `features resolve`, or you used the manual Step 1 fallback), resolve the acceptance target(s) by hand per the **Step 3 fallback** in `references/older-nax-fallback.md` — it covers the single-package path, the per-package monorepo search, and the not-found prompt. Then run them as below.
 
@@ -231,7 +238,14 @@ Triage runs **once per review phase**. Present each phase's findings grouped by 
   Each subagent (targeted or full) runs in fresh context and keeps the main context clean across loop iterations. Loop until no CRITICAL/HIGH remains in the phase, or the user explicitly accepts the remaining findings and tells you to proceed.
 - **Re-run the feature's acceptance tests (Step 3) whenever a fix changed code.** A review fix can break the contract Step 3 proved; the acceptance run is cheap and feature-scoped, so re-verify it green before moving on. If no code changed (all findings waived), skip the re-run.
 
-> **Workflow-draft mode (Step 1c).** Triage the open items instead of phases: findings like below (add the test the suggestion names), rulings by user confirm or override (a `defer` is not resolved), red gates made green, cannot-verify items actually verified with evidence. Fixes need explicit user approval, as above. Skip the two-phase flow; the reference has the per-kind handling.
+> **Workflow-draft mode (Step 1c).** Triage the open items instead of phases:
+> - findings like below (add the test the suggestion names);
+> - **advisor decisions** — every one, flagged or trusted — with each decision's factual premise **verified against the code** before it is confirmed (a `defer` is not resolved);
+> - red gates made green;
+> - **red CI checks** fixed from their logs;
+> - cannot-verify items actually verified with evidence.
+>
+> Fixes need explicit user approval, as above. Skip the two-phase flow; the reference has the per-kind handling.
 
 **Phase 1 — spec findings (from Step 4's `--phase spec` run).** Triage the spec-relative findings (Compliance, Drift, Integration, Convention) per the discipline above, getting acceptance green again after any fix. **Resolve or get the user to waive every CRITICAL/HIGH before running the quality phase** — stabilizing the diff first is the entire point of phasing; a quality review on code you're about to rewrite for spec reasons is wasted.
 
@@ -272,7 +286,11 @@ Now everything is green. Prepare the PR/MR, then either **open a new one** or **
 
 **Full mechanics live in `references/open-pr-mr.md`** — read it now and follow it. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e **detect whether a PR/MR already exists for the branch** and branch on it, 7f create a new one on approval (only when none exists), 7g promote an existing **draft → ready** on approval (leaving its autoPR body intact by default; a body refresh is offered, not forced). If a PR/MR already exists **and is already ready**, report its URL and stop — nothing to open. Leave the branch pushed if the user cancels.
 
-> **Workflow-draft mode (Step 1c).** The PR/MR already exists as a draft, so go straight to 7g on explicit approval (use `featureWorkflow.url` when present, else 7e detection). Never rewrite the generated body. Instead **offer** to append a `## Resolved before ready` section listing each open item and its disposition; apply only on explicit approval. If any item is still unresolved and unwaived, do not promote.
+> **Workflow-draft mode (Step 1c).** The PR/MR already exists as a draft, so go straight to 7g on explicit approval (use `featureWorkflow.url` when present, else 7e detection). Record what was cleared in two places, both on explicit approval, after the fixes are pushed and CI is green:
+> - **Tick the body checklist.** Edit only the generated "Before marking ready" lines, matched by the exact `**<id>**` token nax rendered (`verdict.openItems[].id`): `- [ ] **<id>** …` → `- [x] **<id>** …`, with ` — fixed in <sha>` / ` — verified` / ` — confirmed` / ` — waived: <reason>` appended to that first line. Never rewrite any other part of the body; the reference has the exact line shape.
+> - **Post one evidence comment** (`## Resolved before ready`): one line per item with its disposition and evidence (commit sha, test command and result, CI run link), mirroring the decisions sidecar. Items nax never listed in the body (`ci`, trusted advisor decisions, re-review leftovers) appear only here.
+>
+> In ready-audit mode (Step 1c, outcome `ready`) there is no checklist, so post the comment only, headed `## Verified after ready`. If any item is still unresolved and unwaived, do not promote. **The PR's checks must be green on the head you pushed before 7g runs** (the reference's `ci` item): wait for them after your push, and never promote over a red required check unless the user explicitly waives it by name.
 
 ## Step 8: Record the resume decisions (resume modes only — required)
 
@@ -284,7 +302,7 @@ Write a sidecar beside the artifact you resumed from, recording how each escalat
 ```
 One entry per finding in the artifact — **every** finding, waivers included — each with a one-line `reason`, plus the resume's `outcome`. **Shape and field rules live in `references/resume-from-escalation.md`**; follow it rather than improvising the JSON.
 
-**Workflow-draft mode (Step 1c).** Write the sidecar beside the result instead: `.nax/features/<featureName>/workflow/<runId>/decisions-<timestamp>.json` — one entry per open item (id, kind, disposition `fixed`/`waived`/`confirmed`/`overridden`/`verified`, one-line reason, commit sha when fixed), plus `outcome` (`promoted` or `abandoned`) and `url`. Shape lives in `references/resume-from-workflow-draft.md`. It is a repo-local `.nax` file: run `git check-ignore` on it, tell the user where it is, and do not commit it unless the repo tracks that directory.
+**Workflow-draft mode (Step 1c).** Write the sidecar beside the result instead: `.nax/features/<featureName>/workflow/<runId>/decisions-<timestamp>.json` — one entry per open item (id, `kind` `finding`/`advisor`/`gate`/`ci`/`story`/`cannot-verify`, disposition `fixed`/`waived`/`confirmed`/`overridden`/`verified`, one-line reason, commit sha when fixed), plus `outcome` (`promoted`, `verified-ready` or `abandoned`) and `url`. Ready-audit mode writes the same file. Shape lives in `references/resume-from-workflow-draft.md`. It is a repo-local `.nax` file: run `git check-ignore` on it, tell the user where it is, and do not commit it unless the repo tracks that directory.
 
 Write it as soon as triage is done and any fixes are committed. **Do not defer it past Step 7** — if the user abandons the PR at the approval gate, the judgments they just made are still worth keeping: write the sidecar with `outcome: "abandoned"` and no `url`. This file is the only record that a human ever ruled on these findings; nothing in nax writes it, and an unwritten one cannot be reconstructed.
 
@@ -303,9 +321,15 @@ nax-finish: <feature> — resumed escalation (3 findings: 1 fixed, 2 waived) · 
 ```
 In workflow-draft mode, report the open items' disposition and name the sidecar:
 ```
-nax-finish: <feature> — resumed workflow draft (2 items: 1 fixed, 1 verified) · quality PASS · PR promoted to ready: <url>
+nax-finish: <feature> — resumed workflow draft (2 items: 1 fixed, 1 verified) · acceptance skipped (not generated by workflow) · quality PASS · checks green on <sha> · PR promoted to ready: <url>
   decisions: .nax/features/<feature>/workflow/<runId>/decisions-<timestamp>.json
 ```
+In ready-audit mode, report the audit and the head the checks went green on:
+```
+nax-finish: <feature> — ready audit (4 items: 3 verified, 1 fixed) · acceptance skipped (not generated by workflow) · quality PASS · checks green on <sha> · PR verified ready: <url>
+  decisions: .nax/features/<feature>/workflow/<runId>/decisions-<timestamp>.json
+```
+Use `acceptance PASS (<n> tests)` instead whenever an acceptance group actually ran.
 If any gate was waived by the user, say so explicitly in the summary rather than implying a clean pass.
 
 ## Common mistakes
@@ -321,7 +345,8 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Re-running a full post-impl-review on a workflow draft | The workflow already reviewed; load the open items and offer only a targeted review of the fix diff (Steps 4-5) |
 | Treating a `defer` ruling as resolved | `defer` points at a step that has already passed; get the user to fix it, accept the risk, or file it elsewhere (Step 5) |
 | Skipping cannot-verify ledger items | Run the named tests or read the code and report evidence; waive only with a stated reason (Step 5) |
-| Overwriting the generated PR body when promoting a workflow draft | Leave it intact; offer to append a "Resolved before ready" section (Step 7g) |
+| Overwriting the generated PR body when promoting a workflow draft | Tick only the resolved checklist lines; put the evidence in one PR comment (Step 7) |
+| Treating a workflow outcome of `ready` as finished | Ready is often an advisor's approval; run the ready audit (decisions, cannot-verify, live CI) and report clean only with evidence (Step 1c) |
 | Hand-resolving the spec with `ls`/`find` when `nax features resolve` exists | Run `nax features resolve "<args>" --json` and branch on `status`; only hand-resolve via the documented Fallback when the command is unavailable on older nax (Step 1) |
 | Hardcoding `bun test` / `npm run lint` | Read `quality.commands.*` and `acceptance.command` from config (Step 2) |
 | Running the whole acceptance suite | Scope to the changed feature's acceptance file(s) (Step 3) |
@@ -346,3 +371,6 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Pushing to `main`/`master` | Branch first (Step 7b) |
 | Claiming a clean pass after waiving a finding | State waived findings in the body and final summary |
 | Advancing past a red gate | Each gate is blocking unless the user explicitly waives it |
+| Surfacing only the flagged advisor rulings, or confirming one on the advisor's word | List every decision (`nax advisor list -f <feature> --json`), and verify each one's premise (the cited commit, code or test) before confirming it (Step 1c, reference) |
+| Stopping on a missing acceptance test in workflow-draft mode | Workflow mode never generates one; skip that group with a note and proceed (Step 3) |
+| Promoting a workflow draft whose CI is red, or whose only reason was `CI failed` | Treat each failing check as a `ci` item: read its log, fix the cause, push, wait for green, then promote (Steps 5, 7) |
