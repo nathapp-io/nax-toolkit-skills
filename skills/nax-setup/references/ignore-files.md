@@ -17,19 +17,30 @@ Write both. They are orthogonal: a path can be git-ignored but still context-wal
 nax.lock
 .nax/**/runs/
 .nax/metrics.json
-.nax/features/*/status.json
-.nax/features/*/plan/
-.nax/features/*/acp-sessions.json
-.nax/features/*/interactions/
-.nax/features/*/progress.txt
-.nax/features/*/acceptance-refined.json
+**/.nax/status.json
+**/.nax/features/*/runs/
+**/.nax/features/*/plan/
+**/.nax/features/*/sessions/
+**/.nax/features/*/stories/
+**/.nax/features/*/fragments/
+**/.nax/features/*/interactions/
+**/.nax/features/*/semantic-verdicts/
+**/.nax/features/*/status.json
+**/.nax/features/*/checkpoint.jsonl
+**/.nax/features/*/progress.txt
+**/.nax/features/*/acp-sessions.json
+**/.nax/features/*/acceptance-refined.json
+**/.nax/features/*/*.bak
+**/.nax/features/*/workflow/
 .nax-pids
 .nax-wt/
-**/.nax-acceptance*
-**/_nax_acceptance_test.py
 **/_nax_suggested_test.py
-**/.nax/features/*/
 .nax/prompt-audit/
+.nax/finish-audit/
+.nax/mutation-journal/
+.nax/tool-audit/
+**/.nax/cache/
+**/.nax/scratchpad/
 ```
 
 **Apply idempotently** — add only entries not already present, so re-running the skill (or a prior `nax init`) never duplicates lines:
@@ -45,19 +56,30 @@ done <<'ENTRIES'
 nax.lock
 .nax/**/runs/
 .nax/metrics.json
-.nax/features/*/status.json
-.nax/features/*/plan/
-.nax/features/*/acp-sessions.json
-.nax/features/*/interactions/
-.nax/features/*/progress.txt
-.nax/features/*/acceptance-refined.json
+**/.nax/status.json
+**/.nax/features/*/runs/
+**/.nax/features/*/plan/
+**/.nax/features/*/sessions/
+**/.nax/features/*/stories/
+**/.nax/features/*/fragments/
+**/.nax/features/*/interactions/
+**/.nax/features/*/semantic-verdicts/
+**/.nax/features/*/status.json
+**/.nax/features/*/checkpoint.jsonl
+**/.nax/features/*/progress.txt
+**/.nax/features/*/acp-sessions.json
+**/.nax/features/*/acceptance-refined.json
+**/.nax/features/*/*.bak
+**/.nax/features/*/workflow/
 .nax-pids
 .nax-wt/
-**/.nax-acceptance*
-**/_nax_acceptance_test.py
 **/_nax_suggested_test.py
-**/.nax/features/*/
 .nax/prompt-audit/
+.nax/finish-audit/
+.nax/mutation-journal/
+.nax/tool-audit/
+**/.nax/cache/
+**/.nax/scratchpad/
 ENTRIES
 [ -n "$missing" ] && printf "\n# nax — generated files\n%b" "$missing" >> .gitignore
 ```
@@ -65,6 +87,14 @@ ENTRIES
 The `grep -qxF` guard matches each line **exactly and literally** (the `*` globs are treated as plain text), so a section already present from `nax init` makes the block a no-op.
 
 **Do NOT** add a blanket `.nax/` to `.gitignore` — that untracks the config and specs you want committed. Ignore only the generated artifacts above.
+
+**Do NOT** ignore a feature directory wholesale (`**/.nax/features/*/`) or every JSONL under `.nax/` (`.nax/**/*.jsonl`). Both hide the advisor ledger `.nax/features/<name>/decisions.jsonl`, which nax commits so the PR branch carries the rulings its body cites; the wholesale rule also hides `spec.md` and `prd.json`. Git never reports an ignored file, so the only symptom is an `Advisor ledger commit failed` warning at publish. If a repo already has one of these rules, re-include the ledger right after it:
+
+```gitignore
+!.nax/features/*/decisions.jsonl
+```
+
+(A negation cannot re-include a file under an ignored directory, so a wholesale `features/*/` rule must be replaced, not negated.) Verify with `git check-ignore -v .nax/features/x/decisions.jsonl` — no output means it is tracked.
 
 ## `.naxignore` — context-engine suppression
 
