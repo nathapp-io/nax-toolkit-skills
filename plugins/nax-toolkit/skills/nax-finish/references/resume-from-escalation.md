@@ -110,9 +110,9 @@ Resume is the only place a human ruling on the finish phase's findings is captur
 - One entry per finding in the artifact — **every** finding, including ones left alone.
 - `decision` is `fixed` (code changed, `sha` required) \| `waived` (judged not a defect) \| `deferred` (real, but not for this PR — say where it went, e.g. an issue number, in `reason`).
 - `reason` is one line, always. A waiver with no reason is the entry that will be useless in three weeks.
-- `outcome` is the terminal status of *this* resume: `opened` \| `promoted` \| `already-ready` \| `abandoned`.
+- `outcome` is the status of *this* resume: `pending` (written after triage, before Step 7) \| `opened` \| `promoted` \| `already-ready` \| `abandoned`. Rewrite it after the call that settles it; never record an outcome that has not happened yet.
 
-**Write it as soon as triage and any fixes are committed.** Do not defer it past Step 7 — a resume the user aborts at the PR gate still made real judgments, and those are the ones worth having. In that case write the sidecar with `outcome: "abandoned"` and no `url`.
+**Write it as soon as triage and any fixes are committed**, with `outcome: "pending"`. Do not defer that first write past Step 7 — a resume the user aborts at the PR gate still made real judgments, and those are the ones worth having. In that case write the sidecar with `outcome: "abandoned"` and no `url`.
 
 This is what later answers whether the deeper fix is worth building: if most escalated findings are waived, the reviewer's escalate bar is miscalibrated and the fix is a prompt change; if most are fixed, an in-flow waiver ledger and a real `nax finish --resume` earn their keep.
 
