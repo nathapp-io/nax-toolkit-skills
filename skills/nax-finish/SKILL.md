@@ -11,11 +11,11 @@ Finalize a completed nax feature: prove the changed feature's acceptance tests p
 
 **Announce at start:** "Using nax-finish to finalize `<feature>`: config → acceptance → spec-review → fix → quality-review → fix → quality-gates → PR/MR." In resume mode (Step 1b), announce instead: "Using nax-finish to resume the escalated finish of `<feature>`: acceptance → triage <n> escalated finding(s) → fix → quality-gates → PR/MR." In workflow-draft mode (Step 1c), announce instead: "Using nax-finish to take the workflow draft of `<feature>` to ready: acceptance (if enabled) → clear <n> open item(s) → fix → quality-gates → promote draft."
 
-Work through the steps in order. **Each gate is blocking** — do not advance to the next step while the current one is red, unless the user explicitly tells you to proceed. Track the steps with TodoWrite so the user can see where the run is.
+Work through the steps in order. **Each gate is blocking** — do not advance to the next step while the current one is red, unless the user explicitly tells you to proceed. When the harness has a todo tool, track the steps with it so the user can see where the run is.
 
 ## Step 1: Resolve the feature and the spec source
 
-`args` is the text typed after `/nax-finish`. `/nax-finish graphify-kb` gives `args = "graphify-kb"`; `/nax-finish` alone gives `args = ""`.
+`args` is the text typed after `/nax-finish`. `/nax-finish graphify-kb` gives `args = "graphify-kb"`; `/nax-finish` alone gives `args = ""`. When `args` is free text rather than a feature name, pass the token that names a `.nax/features/<name>` dir. When it names only a PR/MR (a number or URL), find the feature whose `.nax/features/*/workflow/*/result.json` has that `featureWorkflow.url`; if none matches, ask.
 
 Establish two things: **`featureName`** (the `.nax/features/<name>` directory the work belongs to) and a **spec source** — the best available description of intended behaviour. A spec source is one of:
 - **markdown spec** (preferred) — a human-authored `.md`, consumable directly by `post-impl-review`.
@@ -38,11 +38,11 @@ Record for later steps:
 - **`featureName`** — the `.nax/features/<name>` dir name (drives acceptance scoping in Step 3). If only a raw path was given with no matching feature dir, ask which feature dir it maps to when Step 3 needs it.
 - **`specSource`** — `{ kind: "markdown" | "prd", path }`.
 
-Read the spec source in full — the `.md` body, or the `prd.json` stories+ACs. If a markdown spec exists but is empty, print `Error: spec file is empty at <path>` and stop. Print `Feature: <featureName>` and `Spec: <path> (<kind>)`.
+Read the spec source in full — the `.md` body, or the `prd.json` stories+ACs. If a markdown spec exists but is empty, print `Error: spec file is empty at <path>` and stop. Print `Feature: <featureName>` and `Spec: <path> (<kind>)`. (In workflow-draft and ready-audit modes, Step 1c, the spec is needed only to check a premise against it or to refresh the PR body in 7d; read the parts those need, when they come up.)
 
-**Preflight — is there anything to finish?** Detect the base branch (`git remote show origin | grep 'HEAD branch'`; fallback `origin/main`, then `origin/master`) and count commits ahead of it:
+**Preflight — is there anything to finish?** Run `git fetch origin` first: every later comparison against the base (this count, an advisor's file inventory, the fix diff) is wrong against a stale local branch. Detect the base branch (`git remote show origin | grep 'HEAD branch'`; fallback `main`, then `master`) and count commits ahead of the **remote** base:
 ```bash
-git rev-list --count <base>..HEAD 2>/dev/null
+git rev-list --count origin/<base>..HEAD 2>/dev/null
 ```
 If `0`, the branch has nothing beyond base — the feature is already merged and there is nothing to review or ship. Print:
 ```
@@ -69,7 +69,7 @@ ls -t <outputDir>/finish-audit/<featureName>/*.result.json 2>/dev/null | head -1
 
 ## Step 1c: Resume a workflow-mode draft (only when a workflow result exists)
 
-nax's **workflow mode** runs per-story review and fix rounds, then one branch review, one branch fix and one re-review, and publishes the PR/MR as a **draft** whenever anything needs a human, or as **ready** when nothing deterministic holds it back and the advisor approves (the `finish-approval` decision). Nothing in nax takes a draft to ready, and nothing re-checks an advisor-approved ready PR. This skill does both: it resumes on outcome `draft` (workflow-draft mode) and audits outcome `ready` (ready-audit mode).
+nax's **workflow mode** runs per-story review and fix rounds, then one branch review and up to `workflow.maxBranchFixRounds` (default 2) branch fix and re-review rounds, and publishes the PR/MR as a **draft** whenever anything needs a human, or as **ready** when nothing deterministic holds it back and the advisor approves (the `finish-approval` decision). Nothing in nax takes a draft to ready, and nothing re-checks an advisor-approved ready PR. This skill does both: it resumes on outcome `draft` (workflow-draft mode) and audits outcome `ready` (ready-audit mode).
 
 Like Step 1b, this needs the resolved `featureName`. Find the newest workflow run directory (newest by mtime, or latest `featureWorkflow.startedAt`) and read its `result.json`:
 
@@ -266,6 +266,10 @@ For each of `build`, `typecheck`, `lint`, `test` — skipping any whose command 
 ```
 Run the **unscoped** commands (the full repo), not the `*Scoped` variants — this is the final whole-repo gate. **Never run `formatFix`/`formatFixScoped`/`lintFix` as a gate**: they mutate files, so a green from one proves only that it rewrote the tree. They are proposed fixes, applied under user approval, after which the real gate re-runs. There is no `format` key in nax's `quality.commands` schema, and unknown keys are stripped rather than rejected, so a `format` entry in a config is silently ignored by nax itself — do not resurrect it as a gate here. Capture each exit code.
 
+**Run each gate as its own command — one tool call per gate, the command string exactly as configured.** Never loop over the commands in one shell line: zsh does not word-split an unquoted `$cmd`, so every gate "runs" as a single missing command. Exit `127` (command not found) or `126` (not executable) means the gate **did not run** — not a pass, not a defect: fix the invocation and run it again, and never report it as run.
+
+**A formatter is a fix, not a gate step.** When a gate fails on formatting (biome, prettier, gofmt, ruff format), the formatter write (`formatFix`, `lintFix`, `biome format --write`, …) is a proposed fix like any other: list the files it will rewrite, apply it only on explicit approval (or as part of an approved fix batch that named it), then re-run **every** gate — build, typecheck and test as well as the one that failed.
+
 Every run must be **green (exit 0)**. If any gate fails:
 1. Show the failing output.
 2. Propose fixes and apply them **with user approval**.
@@ -282,15 +286,15 @@ Quality (repo root):
 
 ## Step 7: Open or promote the MR/PR (only on explicit approval)
 
-Now everything is green. Prepare the PR/MR, then either **open a new one** or **promote the existing draft to ready** — **only after the user explicitly approves**. nax's **autoPR** may already have opened a PR/MR for the branch (draft or ready) during the run, so this step **detects first** and never blindly creates.
+Now everything is green. Prepare the PR/MR, then either **open a new one** or **promote the existing draft to ready** — **only after the user explicitly approves**. Ask that approval **once**, as one question. Its options are the actions you can take (for example commit + push + promote, commit + push only, show the diff first) and, when any fix changed runtime behaviour (anything beyond formatting, renames, comments or tests), **a targeted review of the fix diff first** (the reference has the procedure). Re-ask only a question that got no answer. nax's **autoPR** may already have opened a PR/MR for the branch (draft or ready) during the run, so this step **detects first** and never blindly creates.
 
-**Full mechanics live in `references/open-pr-mr.md`** — read it now and follow it. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e **detect whether a PR/MR already exists for the branch** and branch on it, 7f create a new one on approval (only when none exists), 7g promote an existing **draft → ready** on approval (leaving its autoPR body intact by default; a body refresh is offered, not forced). If a PR/MR already exists **and is already ready**, report its URL and stop — nothing to open. Leave the branch pushed if the user cancels.
+**Full mechanics live in `references/open-pr-mr.md`** — read the file before 7a, every run, even when you know it; do not work 7e–7g from memory. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e **detect whether a PR/MR already exists for the branch** and branch on it, 7f create a new one on approval (only when none exists), 7g promote an existing **draft → ready** on approval (leaving its autoPR body intact by default; a body refresh is offered, not forced). If a PR/MR already exists **and is already ready**, report its URL and stop — nothing to open. Leave the branch pushed if the user cancels.
 
 > **Workflow-draft mode (Step 1c).** The PR/MR already exists as a draft, so go straight to 7g on explicit approval (use `featureWorkflow.url` when present, else 7e detection). Record what was cleared in two places, both on explicit approval, after the fixes are pushed and CI is green:
 > - **Tick the body checklist.** Edit only the generated "Before marking ready" lines, matched by the exact `**<id>**` token nax rendered (`verdict.openItems[].id`): `- [ ] **<id>** …` → `- [x] **<id>** …`, with ` — fixed in <sha>` / ` — verified` / ` — confirmed` / ` — waived: <reason>` appended to that first line. Never rewrite any other part of the body; the reference has the exact line shape.
 > - **Post one evidence comment** (`## Resolved before ready`): one line per item with its disposition and evidence (commit sha, test command and result, CI run link), mirroring the decisions sidecar. Items nax never listed in the body (`ci`, trusted advisor decisions, re-review leftovers) appear only here.
 >
-> In ready-audit mode (Step 1c, outcome `ready`) there is no checklist, so post the comment only, headed `## Verified after ready`. If any item is still unresolved and unwaived, do not promote. **The PR's checks must be green on the head you pushed before 7g runs** (the reference's `ci` item): wait for them after your push, and never promote over a red required check unless the user explicitly waives it by name.
+> In ready-audit mode (Step 1c, outcome `ready`) there is no checklist, so post the comment only, headed `## Verified after ready`. If any item is still unresolved and unwaived, do not promote. **The PR's checks must be green on the head you pushed before 7g runs** (the reference's `ci` item): wait for them after your push, and never promote over a red required check unless the user explicitly waives it by name. A PR that is `conflicting` (merge conflicts with the base) is never promoted: resolve the conflict, push, and wait for checks on the new head.
 
 ## Step 8: Record the resume decisions (resume modes only — required)
 
@@ -302,9 +306,9 @@ Write a sidecar beside the artifact you resumed from, recording how each escalat
 ```
 One entry per finding in the artifact — **every** finding, waivers included — each with a one-line `reason`, plus the resume's `outcome`. **Shape and field rules live in `references/resume-from-escalation.md`**; follow it rather than improvising the JSON.
 
-**Workflow-draft mode (Step 1c).** Write the sidecar beside the result instead: `.nax/features/<featureName>/workflow/<runId>/decisions-<timestamp>.json` — one entry per open item (id, `kind` `finding`/`advisor`/`gate`/`ci`/`story`/`cannot-verify`, disposition `fixed`/`waived`/`confirmed`/`overridden`/`verified`, one-line reason, commit sha when fixed), plus `outcome` (`promoted`, `verified-ready` or `abandoned`) and `url`. Ready-audit mode writes the same file. Shape lives in `references/resume-from-workflow-draft.md`. It is a repo-local `.nax` file: run `git check-ignore` on it, tell the user where it is, and do not commit it unless the repo tracks that directory.
+**Workflow-draft mode (Step 1c).** Write the sidecar beside the result instead: `.nax/features/<featureName>/workflow/<runId>/decisions-<timestamp>.json` — one entry per open item (id, `kind` `finding`/`advisor`/`gate`/`ci`/`story`/`cannot-verify`/`minor`/`reason`, disposition `fixed`/`waived`/`confirmed`/`overridden`/`verified`, one-line reason, commit sha when fixed), plus `outcome` (`pending`, then `promoted`, `verified-ready` or `abandoned`) and `url`. Ready-audit mode writes the same file. Shape lives in `references/resume-from-workflow-draft.md`. It is a repo-local `.nax` file: run `git check-ignore` on it, tell the user where it is, and do not commit it unless the repo tracks that directory.
 
-Write it as soon as triage is done and any fixes are committed. **Do not defer it past Step 7** — if the user abandons the PR at the approval gate, the judgments they just made are still worth keeping: write the sidecar with `outcome: "abandoned"` and no `url`. This file is the only record that a human ever ruled on these findings; nothing in nax writes it, and an unwritten one cannot be reconstructed.
+Write it as soon as triage is done and any fixes are committed, with `outcome: "pending"`. **`outcome` records what happened, never what is about to:** rewrite the same file after the step that settles it — after the promote/create call succeeds (`promoted` / `opened`, plus the `url`), after the ready audit ends (`verified-ready`), or when the user stops (`abandoned`, no `url`). **Do not defer the first write past Step 7** — if the user abandons the PR at the approval gate, the judgments they just made are still worth keeping. This file is the only record that a human ever ruled on these findings; nothing in nax writes it, and an unwritten one cannot be reconstructed.
 
 ## Final summary
 
@@ -371,6 +375,10 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Pushing to `main`/`master` | Branch first (Step 7b) |
 | Claiming a clean pass after waiving a finding | State waived findings in the body and final summary |
 | Advancing past a red gate | Each gate is blocking unless the user explicitly waives it |
+| Running the gates in one shell loop and reporting exit 127 as "ran" | One tool call per gate; 127/126 means the gate did not run (Step 6) |
+| Running a formatter's `--write` to clear a lint failure without asking | It is a proposed fix: approval first, then re-run every gate (Step 6) |
+| Writing the sidecar with the outcome you expect (`promoted`) before it happens | Write `pending`, then rewrite the outcome after the call that settles it (Step 8) |
+| Comparing against a local `main` that was never fetched | `git fetch origin` in the preflight; compare against `origin/<base>` or the workflow `seed` (Step 1) |
 | Surfacing only the flagged advisor rulings, or confirming one on the advisor's word | List every decision (`nax advisor list -f <feature> --json`), and verify each one's premise (the cited commit, code or test) before confirming it (Step 1c, reference) |
 | Stopping on a missing acceptance test in workflow-draft mode | Workflow mode never generates one; skip that group with a note and proceed (Step 3) |
 | Promoting a workflow draft whose CI is red, or whose only reason was `CI failed` | Treat each failing check as a `ci` item: read its log, fix the cause, push, wait for green, then promote (Steps 5, 7) |
