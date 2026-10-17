@@ -66,13 +66,13 @@ Four kinds of item still come from elsewhere. Add them to the list, labelled as 
 
 1. **Trusted advisor decisions** (those nax applied without asking: a confident `waive`, a `carry`, pre-flight rulings; in ready-audit mode, the approved `finish-approval`). They shaped the branch without a human seeing them, so they are verified too.
 2. **Story-level cannot-verify lines.** `openItems` holds only the branch review's cannot-verify items; a story's own lines live in the run ledgers.
-
 3. **Live CI.** Read the PR's checks on its current head: `gh pr checks <url> --json name,state,bucket,link` (GitHub) or `glab ci status --branch <branch>` (GitLab). One item per failing or pending check, labelled `check:<name>`. A `_run:ci` item from `openItems` closes only when the checks are green on the pushed head.
 4. **Fix-now minors.** Each `featureWorkflow.minors[]` entry with `triage: "fix-now"` that `branch-rereview.json` did not mark addressed: one item, labelled by the minor's `id`.
 
 **On nax >= 0.90** (the status JSON has a `supplementaryItems` field, even an empty one), items 1 and 2 are exactly `supplementaryItems`: `advisor` items (id `D-<n>`) and `cannot-verify` items (id `<storyId>:cv<n>`, assigned by nax). Use those ids as they are; never number the lines yourself. `nax advisor list -f <feature> --json` still gives each decision's full text (`rationale`, `action`).
 
 **On nax 0.89** (no `supplementaryItems` field), build them by hand: every decision in `nax advisor list -f <feature> --json` that is not already an `advisor` or `ruling` item, labelled by its id; and each `<runDir>/ledger.md` line `<storyId>: cannot-verify: <text>` whose text matches no `cannot-verify` item, labelled `<storyId>:cv<n>`.
+
 All four are recorded through `nax workflow record`: it accepts kinds `ci` and `minor` with any id, and on nax >= 0.90 it accepts the `supplementaryItems` ids under their own kinds. On nax 0.89 it rejects items 1 and 2: their rulings go in the `## Also verified` comment instead (see Promotion) and are named in the final summary.
 
 Print the whole list grouped by kind, each with its id or label, severity, `file:line`, the full issue, the suggestion, and any ruling joined to it. Do not truncate. If the list is empty and the outcome is still `draft`, say so and ask the user whether to go straight to the gates and promotion. Then confirm with the user that the items are still live: they may have fixed some by hand since the draft was opened. Drop confirmed-fixed items from the work list, but still record them (`verified`, with the evidence).
