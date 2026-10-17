@@ -36,6 +36,7 @@ The JSON object:
 | `workflowPassed` | Whether nax's own blocking kinds (`finding`, `ruling`, `gate`) are clear. It does not mean ready. |
 | `reasons` | Why the PR is a draft, in nax's words. |
 | `openItems` | The open items, below. |
+| `supplementaryItems` | nax >= 0.90 only: items `openItems` does not hold but a ruling may name (next section). Never blocking. |
 
 **`openItems` is nax's complete list for the run.** Each item is `{ id, kind, severity?, file?, line?, issue, suggestion?, ruling? }`. Its `id` is the `**<id>**` token in the PR body's "Before marking ready" checklist, and the id `nax workflow record` accepts. Kinds:
 
@@ -63,12 +64,16 @@ nax already cross-checks `reasons` against the items: a reason it cannot attribu
 
 Four kinds of item still come from elsewhere. Add them to the list, labelled as shown:
 
-1. **Trusted advisor decisions.** `nax advisor list -f <feature> --json` lists every decision for the feature, flagged first, including those nax applied without asking (a confident `waive`, a `carry`, pre-flight rulings). Every decision that is not already an `advisor` or `ruling` item is a trusted decision: label it by its id. They shaped the branch without a human seeing them, so they are verified too. In ready-audit mode the approved `finish-approval` decision is one of them.
-2. **Story-level cannot-verify lines.** `<runDir>/ledger.md` lines `<storyId>: cannot-verify: <text>`. `openItems` holds only the branch review's cannot-verify items, so a story-level line whose text matches none of them is its own item: label it `<storyId>:cv<n>`.
+1. **Trusted advisor decisions** (those nax applied without asking: a confident `waive`, a `carry`, pre-flight rulings; in ready-audit mode, the approved `finish-approval`). They shaped the branch without a human seeing them, so they are verified too.
+2. **Story-level cannot-verify lines.** `openItems` holds only the branch review's cannot-verify items; a story's own lines live in the run ledgers.
 3. **Live CI.** Read the PR's checks on its current head: `gh pr checks <url> --json name,state,bucket,link` (GitHub) or `glab ci status --branch <branch>` (GitLab). One item per failing or pending check, labelled `check:<name>`. A `_run:ci` item from `openItems` closes only when the checks are green on the pushed head.
 4. **Fix-now minors.** Each `featureWorkflow.minors[]` entry with `triage: "fix-now"` that `branch-rereview.json` did not mark addressed: one item, labelled by the minor's `id`.
 
-Items 3 and 4 are recorded through `nax workflow record` (it accepts kinds `ci` and `minor` with any id). Items 1 and 2 are not yet accepted (nax#2578): their rulings go in the `## Also verified` comment (see Promotion) and are named in the final summary.
+**On nax >= 0.90** (the status JSON has a `supplementaryItems` field, even an empty one), items 1 and 2 are exactly `supplementaryItems`: `advisor` items (id `D-<n>`) and `cannot-verify` items (id `<storyId>:cv<n>`, assigned by nax). Use those ids as they are; never number the lines yourself. `nax advisor list -f <feature> --json` still gives each decision's full text (`rationale`, `action`).
+
+**On nax 0.89** (no `supplementaryItems` field), build them by hand: every decision in `nax advisor list -f <feature> --json` that is not already an `advisor` or `ruling` item, labelled by its id; and each `<runDir>/ledger.md` line `<storyId>: cannot-verify: <text>` whose text matches no `cannot-verify` item, labelled `<storyId>:cv<n>`.
+
+All four are recorded through `nax workflow record`: it accepts kinds `ci` and `minor` with any id, and on nax >= 0.90 it accepts the `supplementaryItems` ids under their own kinds. On nax 0.89 it rejects items 1 and 2: their rulings go in the `## Also verified` comment instead (see Promotion) and are named in the final summary.
 
 Print the whole list grouped by kind, each with its id or label, severity, `file:line`, the full issue, the suggestion, and any ruling joined to it. Do not truncate. If the list is empty and the outcome is still `draft`, say so and ask the user whether to go straight to the gates and promotion. Then confirm with the user that the items are still live: they may have fixed some by hand since the draft was opened. Drop confirmed-fixed items from the work list, but still record them (`verified`, with the evidence).
 
@@ -139,7 +144,7 @@ Resume is the only place a human ruling on a workflow draft is captured. `nax wo
 
    `--outcome promoted` and `--outcome verified-ready` are refused while the PR is still a draft.
 
-Trusted advisor decisions and story-level cannot-verify lines cannot be recorded yet (`record` rejects ids that are not open items; nax#2578). Do not force them in under another kind. Keep their rulings for the `## Also verified` comment.
+On nax >= 0.90, include the rulings on `supplementaryItems` in the same decisions file, with each item's own id and kind (`advisor` or `cannot-verify`); `promote` puts them in its evidence comment with the rest. On nax 0.89, `record` rejects them (`unknown item …`): never force one in under another kind; keep those rulings for the `## Also verified` comment.
 
 The sidecar sits under `.nax/features/<feature>/workflow/`, which is git-ignored: leave it uncommitted and tell the user where it is.
 
@@ -160,7 +165,7 @@ The sidecar sits under `.nax/features/<feature>/workflow/`, which is git-ignored
 
    Exit `1` is an error that writes nothing: the run did not end as a draft, has no PR url, the PR is already ready, no forge was detected, or HEAD could not be read. Report it.
 
-2. **Post the `## Also verified` comment first** when the list had trusted advisor decisions or story-level cannot-verify lines: one comment, one line per item (label, kind, disposition, and the evidence), with `gh pr comment <url> --body-file <file>` or `glab mr note create <iid> -m …` (older glab: `glab mr note <iid> -m …`). Keep the comment file beside your decisions file. It is the only record of those rulings until nax#2578 ships, so it goes out before anything can stop the promotion. Name it in the same Step 7 approval question.
+2. **nax 0.89 only: post the `## Also verified` comment first** when the list had trusted advisor decisions or story-level cannot-verify lines: one comment, one line per item (label, kind, disposition, and the evidence), with `gh pr comment <url> --body-file <file>` or `glab mr note create <iid> -m …` (older glab: `glab mr note <iid> -m …`). Keep the comment file beside your decisions file. On 0.89 it is the only record of those rulings, so it goes out before anything can stop the promotion. Name it in the same Step 7 approval question. On nax >= 0.90 skip this step: those rulings are in the sidecar and `promote`'s evidence comment.
 
 3. **Promote on explicit approval** (the single Step 7 question):
 
@@ -190,7 +195,7 @@ For outcome `ready` the PR/MR is already ready. That is usually an advisor's app
 - **Verify each item** as "Handling each kind" says.
 - **Nothing open** → report the PR clean, with the evidence (decisions verified, checks green on `<sha>`), and stop after recording.
 - **Something open** → triage and fix it as for a draft, pushing to the same PR. A blocking item is a red required check, an advisor decision whose premise is false, or a CRITICAL/HIGH defect. For one of those, **offer** to convert the PR back to draft while it is fixed (`gh pr ready <url> --undo` / `glab mr update <iid> --draft`); re-promote it by hand once it is cleared (`promote` refuses this case; see above). Never change the PR's state without the user's approval.
-- **Recording.** `nax workflow promote` refuses a ready PR, and the body of a ready PR has no checklist, so do not edit the body. Post the evidence comment by hand, headed `## Verified after ready`, covering every item. Then record: `nax workflow record -f <featureName> --decisions <file> --outcome verified-ready` with the rulings on open items (an empty array `[]` when there are none), or `--outcome promoted` if it went back to draft and was re-promoted.
+- **Recording.** `nax workflow promote` refuses a ready PR, and the body of a ready PR has no checklist, so do not edit the body. Post the evidence comment by hand, headed `## Verified after ready`, covering every item. Then record: `nax workflow record -f <featureName> --decisions <file> --outcome verified-ready` with the rulings on open items and, on nax >= 0.90, on `supplementaryItems` (the readiness approval included; an empty array `[]` when there are none), or `--outcome promoted` if it went back to draft and was re-promoted.
 
 ## Steps 3-8 in workflow modes
 
@@ -204,7 +209,7 @@ For outcome `ready` the PR/MR is already ready. That is usually an advisor's app
 
 **Step 6 (repo-root gates)** is required: the tree changed after the workflow's final gates.
 
-**Step 7 (promote).** The PR/MR already exists: commit and push (7b), run the `promote` dry run, and on explicit approval post any `## Also verified` comment, then run `promote --yes`, as "Promotion" says. If any item is still unresolved and unwaived, do not promote. In ready-audit mode post the `## Verified after ready` comment only.
+**Step 7 (promote).** The PR/MR already exists: commit and push (7b), run the `promote` dry run, and on explicit approval run `promote --yes` (on nax 0.89, after any `## Also verified` comment), as "Promotion" says. If any item is still unresolved and unwaived, do not promote. In ready-audit mode post the `## Verified after ready` comment only.
 
 **Step 8 (record).** `nax workflow record` already wrote the sidecar in Step 5, and `promote --yes` set its outcome. Record any other outcome (`abandoned`, `verified-ready`) as "Recording the decisions" says.
 
@@ -215,10 +220,10 @@ For outcome `ready` the PR/MR is already ready. That is usually an advisor's app
 | Building the open-items list by hand from `result.json`, the ledger and the advisor ledger | `nax workflow status -f <feature> --json`, plus only the four supplementary sources above |
 | Writing or editing `decisions-*.json` by hand | `nax workflow record --decisions <file>`; it validates ids, kinds and shas |
 | Ticking the checklist and posting the evidence comment by hand | `nax workflow promote --yes` does both from the sidecar |
-| Posting `## Also verified` after `promote --yes` | Post it first: if the promotion stops, those rulings exist nowhere else |
+| Posting `## Also verified` on nax >= 0.90, or after `promote --yes` on 0.89 | On 0.90 record those rulings instead; on 0.89 post the comment first, since nothing else holds them |
 | Promoting the draft without clearing its open items | `promote` refuses while an item is unruled; rule on every item, fixed, verified, confirmed or explicitly waived |
 | Running `promote --yes` without the dry run, or before pushing | Push, dry-run, show the result, then ask; `ci-green` is checked against local HEAD |
-| Forcing a trusted decision or story-level cannot-verify line into the sidecar under another kind | Put it in the `## Also verified` comment (nax#2578) |
+| Numbering story-level cannot-verify lines yourself, or forcing one into the sidecar under another kind | Use the ids in `supplementaryItems` (nax >= 0.90); on 0.89 put the ruling in the `## Also verified` comment |
 | Re-running a full `post-impl-review` | The workflow already reviewed; offer only a targeted review of the fix diff |
 | Confirming an advisor decision on its own rationale | Verify the premise (commit, code, test) first and show the evidence; list trusted decisions too |
 | Treating the `ci` field as live, or promoting on green local gates while CI is red | `ci` is a publish-time snapshot; read the live checks, fix from the log, push, and wait for the new head |
