@@ -1,6 +1,6 @@
 ---
 name: nax-finish
-description: Finalize a completed nax feature through to an opened MR/PR, or resume one that nax left unfinished: an escalated finish phase, or a workflow-mode draft PR. Resolves the feature spec (spec.md, .nax/specs/, docs/specs/, or prd.json fallback) and short-circuits if already merged. Reads the nax config for the repo's real quality and acceptance commands, drives acceptance tests green, runs post-impl-review in two phases (spec, then code-quality) in isolated subagents, triages findings with the user, runs the repo-root quality gates green, then opens a PR/MR with gh/glab or promotes a draft, only on explicit approval. For an escalated finish it loads findings from the finish-audit artifact; for a workflow draft it builds the open-items list from the workflow result, clears each item, and promotes the draft. Both record the rulings. Triggers: "finish this nax feature", "nax-finish escalated", "nax-finish workflow draft", "/nax-finish <feature>".
+description: Finalize a completed nax feature through to an opened MR/PR, or resume one that nax left unfinished: an escalated finish phase, or a workflow-mode draft PR. Resolves the feature spec (spec.md, .nax/specs/, docs/specs/, or prd.json fallback) and short-circuits if already merged. Reads the nax config for the repo's real quality and acceptance commands, drives acceptance tests green, runs post-impl-review in two phases (spec, then code-quality) in isolated subagents, triages findings with the user, runs the repo-root quality gates green with nax gates run, then opens a PR/MR with gh/glab or promotes a draft, only on explicit approval. For an escalated finish it loads findings from the finish-audit artifact; for a workflow draft it reads the open items with nax workflow status, clears each item, records rulings with nax workflow record, and promotes it. Both record the rulings. Triggers: "finish this nax feature", "nax-finish escalated", "nax-finish workflow draft", "/nax-finish <feature>".
 ---
 
 # nax-finish
@@ -22,7 +22,7 @@ Work through the steps in order. **Each gate is blocking** — do not advance to
 | `references/acceptance.md` | Step 3 has an acceptance group to run |
 | `references/review-and-triage.md` | Steps 4-5 in the normal and escalated modes |
 | `references/open-pr-mr.md` | Step 7, every run |
-| `references/older-nax-fallback.md` | `nax features resolve` is unavailable, or its output has no `acceptance` block |
+| `references/older-nax-fallback.md` | `nax features resolve` is unavailable or its output has no `acceptance` block, or `nax gates run` / `nax workflow` is unknown (nax < 0.89) |
 
 ## Step 1: Resolve the feature and the spec source
 
@@ -82,22 +82,24 @@ ls -t <outputDir>/finish-audit/<featureName>/*.result.json 2>/dev/null | head -1
 
 nax's **workflow mode** runs per-story review and fix rounds, then one branch review and up to `workflow.maxBranchFixRounds` (default 2) branch fix and re-review rounds, and publishes the PR/MR as a **draft** whenever anything needs a human, or as **ready** when nothing deterministic holds it back and the advisor approves (the `finish-approval` decision). Nothing in nax takes a draft to ready, and nothing re-checks an advisor-approved ready PR. This skill does both: it resumes on outcome `draft` (workflow-draft mode) and audits outcome `ready` (ready-audit mode).
 
-Like Step 1b, this needs the resolved `featureName`. Find the newest workflow run directory (newest by mtime, or latest `featureWorkflow.startedAt`) and read its `result.json`:
+Like Step 1b, this needs the resolved `featureName`. Ask nax for the newest workflow run's verdict. Run every `nax workflow` and `nax gates` command from `repoRoot` (the directory holding `.nax/`), or pass `-d <repoRoot>`: they default to the current directory.
 
 ```bash
-ls -td .nax/features/<featureName>/workflow/*/ 2>/dev/null | head -1
+nax workflow status -f <featureName> --json
 ```
 
-- **No directory, unreadable, or no `featureWorkflow`** → say nothing and continue normally at Step 2. This is the ordinary case: only a workflow-mode run writes these files.
-- **`featureWorkflow.outcome` is `ready`** (written as `opened` by older nax) → the PR/MR is already ready, but "ready" is often an advisor's call (nax asks the advisor for approval when nothing deterministic holds the PR back). Run in **ready-audit mode**: the same open-items list minus promotion. Verify every advisor decision, the readiness approval included; verify the ledger cannot-verify lines; and read the PR's live CI checks. Nothing open → report it clean, with the evidence, and stop. Something open → triage it like a draft item, push fixes to the same PR, and record it as below. For a blocking item, **offer** to convert the PR back to draft (`gh pr ready --undo` / `glab mr update <iid> --draft`) while it is fixed, then re-promote. Never flip it without the user's approval.
+It exits `0` (ready, nothing open), `2` (something needs a human) or `1` (error, `{"error": …}` on stdout). On nax older than 0.89 it prints no JSON or `unknown command`: say so once and read the run by hand per `references/older-nax-fallback.md` ("Workflow draft on nax < 0.89"), branching on `featureWorkflow.outcome` the same way.
+
+- **Exit `1` with `no workflow result for feature …` or `… has not started its feature steps`, or no `outcome` in the JSON** → say nothing and continue normally at Step 2 (for a run with no `outcome`, say the workflow did not publish). This is the ordinary case: only a workflow-mode run writes these files. Any other error → report it.
+- **`outcome` is `ready`** (written as `opened` by older nax) → the PR/MR is already ready, but "ready" is often an advisor's call (nax asks the advisor for approval when nothing deterministic holds the PR back). Run in **ready-audit mode**: the same open-items list minus promotion. Verify every advisor decision, the readiness approval included; verify the ledger cannot-verify lines; and read the PR's live CI checks. Nothing open → report it clean, with the evidence, and stop. Something open → triage it like a draft item, push fixes to the same PR, and record it as below. For a blocking item, **offer** to convert the PR back to draft (`gh pr ready --undo` / `glab mr update <iid> --draft`) while it is fixed, then re-promote. Never flip it without the user's approval.
 - **`local-only`** (no forge, push failed, or `workflow.publish: none`) or **`pushed`** (`workflow.publish: push`; branch pushed, no PR) — `skipped` on older nax → continue normally; Step 7 offers to open one.
-- **`draft`** → print `featureWorkflow.reasons` and the open items (built per the reference), confirm with the user that they are still live (they may have fixed some by hand since), and on confirmation run in **workflow-draft mode**: Steps 3-8 change as the reference's "Steps 3-8 in workflow modes" section says, and Step 8 becomes required.
+- **`draft`** → print `reasons` and the open items (`openItems` plus the supplementary items the reference lists), confirm with the user that they are still live (they may have fixed some by hand since), and on confirmation run in **workflow-draft mode**: Steps 3-8 change as the reference's "Steps 3-8 in workflow modes" section says, and Step 8 becomes required.
 
 **Ready-audit mode** follows the same workflow-mode changes for Steps 3, 4, 5, 6 and 8, and skips only the promotion in 7f/7g. So acceptance (Step 3) and the repo-root gates (Step 6) still run. A **blocking item** in ready-audit mode is a red required CI check, an advisor decision whose premise turned out false, or a CRITICAL/HIGH finding; only those make the skill offer to convert the PR back to draft.
 
 If Step 1b also found an escalated finish-audit artifact, ask the user which one they mean to resume; do not merge them.
 
-**Read `references/resume-from-workflow-draft.md` before acting on an artifact** — it owns artifact discovery, the field-by-field result contract (and how to fail soft on older nax), how the open-items list is built, how each kind of item is handled, the decisions sidecar, and how Steps 3-8 change in workflow modes.
+**Read `references/resume-from-workflow-draft.md` before acting on the result** — it owns the `nax workflow status` output, the items `openItems` does not hold, how each kind of item is handled, recording with `nax workflow record`, promoting with `nax workflow promote`, and how Steps 3-8 change in workflow modes.
 
 ## Step 2: Understand the nax config (quality + acceptance commands)
 
@@ -110,7 +112,7 @@ Before running anything, learn what *this* repo runs. Never hardcode `bun test` 
 cat .nax/config.json 2>/dev/null
 ```
 Extract:
-- `quality.commands` → `build`, `typecheck`, `lint`, `test` (the **unscoped** variants — Step 6 runs the whole repo, not a scoped subset). A gate whose command is unset is **skipped**, not failed — an unset command is the only way a gate is off. (`quality.requireTypecheck` / `requireLint` / `requireTests` no longer exist; nax rejects them at parse time, so no config you read will carry one.)
+- `quality.commands` → `build`, `typecheck`, `lint`, `test`, `e2e` (the **unscoped** variants — Step 6 runs the whole repo, not a scoped subset). A gate whose command is unset is **skipped**, not failed — an unset command is the only way a gate is off. (`quality.requireTypecheck` / `requireLint` / `requireTests` no longer exist; nax rejects them at parse time, so no config you read will carry one.)
 - `acceptance.enabled` (default `true`), `acceptance.command` (optional explicit runner, may contain a `{{FILE}}` placeholder), `acceptance.testPath` (default filename, e.g. `.nax-acceptance.test.ts`).
 - `project.language` if present (drives the acceptance test-file extension).
 - `project.type` if present — `"monorepo"` is the **authoritative** monorepo signal; trust it over any directory probe.
@@ -157,28 +159,36 @@ In every mode: apply nothing without explicit user approval, re-run the feature'
 
 Run the **repo-root** quality commands — every gate that is configured *and* required — from `repoRoot`, regardless of whether the repo is single-package or a monorepo. In workflow-draft mode this is required: the tree changed after the workflow's final gates.
 
-For each of `build`, `typecheck`, `lint`, `test` — skipping any whose command is unset, which is the only way a gate is off — matching the gate order nax's own finish phase runs:
+Run them through nax, which resolves `quality.commands` exactly as its own finish phase does (global config, project file, active profile) and runs `build -> typecheck -> lint -> test -> e2e`, skipping any gate whose command is unset (the only way a gate is off):
 ```bash
-<the exact command string from quality.commands.<gate>>
+nax gates run --json
 ```
-Run the **unscoped** commands (the full repo), not the `*Scoped` variants — this is the final whole-repo gate. **Never run `formatFix`/`formatFixScoped`/`lintFix` as a gate**: they mutate files, so a green from one proves only that it rewrote the tree. They are proposed fixes, applied under user approval, after which the real gate re-runs. There is no `format` key in nax's `quality.commands` schema, and unknown keys are stripped rather than rejected, so a `format` entry in a config is silently ignored by nax itself — do not resurrect it as a gate here. Capture each exit code.
+Never spawn the gate commands yourself. On nax older than 0.89 (`unknown command`, or no JSON on stdout), say so once and follow the Step 6 fallback in `references/older-nax-fallback.md`.
 
-**Run each gate as its own command — one tool call per gate, the command string exactly as configured.** Never loop over the commands in one shell line: zsh does not word-split an unquoted `$cmd`, so every gate "runs" as a single missing command. Exit `127` (command not found) or `126` (not executable) means the gate **did not run** — not a pass, not a defect: fix the invocation and run it again, and never report it as run.
+It runs the root, **unscoped** commands only, never `formatFix`/`formatFixScoped`/`lintFix`, and every selected gate even after a red one. Read the JSON report (`passed`, `gates[]` with `name`, `status`, `exitCode`, `durationMs`, `outputTail`, `summary`) and the exit code:
+- **`0`** — at least one gate ran and every gate is `passed`.
+- **`2`** — a gate is not green, or nothing is configured (`gates: []`: say so plainly; nothing was verified, which is not a pass). Per gate: `failed` is a real failure; `not-run` (exit 127, 126, or a spawn error) means the gate **did not run**: a missing tool or a broken command, not a defect and never a pass; fix the environment or the config and re-run. `timed-out` ran past 15 minutes. A `failedPhase: "setup"` gate failed in its `e2eSetup` bootstrap.
+- **`1`** — nax could not run the gates: `{"error": …}`. `Project not trusted: <dir>` carries the grant command (`nax trust add <dir>`): show it and ask the user to run it, never grant trust yourself. Otherwise (no nax project, invalid config), report the message.
+
+Re-run one gate while fixing with `nax gates run --gate <name> --json` (repeatable), then finish with a full run.
+
+**Never run `formatFix`/`formatFixScoped`/`lintFix` as a gate**: they mutate files, so a green from one proves only that it rewrote the tree.
 
 **A formatter is a fix, not a gate step.** When a gate fails on formatting (biome, prettier, gofmt, ruff format), the formatter write (`formatFix`, `lintFix`, `biome format --write`, …) is a proposed fix like any other: list the files it will rewrite, apply it only on explicit approval (or as part of an approved fix batch that named it), then re-run **every** gate — build, typecheck and test as well as the one that failed.
 
 Every run must be **green (exit 0)**. If any gate fails:
 1. Show the failing output.
 2. Propose fixes and apply them **with user approval**.
-3. Re-run that gate (and any gate the fix could affect). Loop until all configured gates pass. Do not advance while any gate is red unless the user explicitly waives it.
+3. Re-run that gate (and any gate the fix could affect), then the full `nax gates run`. Loop until all configured gates pass. Do not advance while any gate is red unless the user explicitly waives it.
 
-Print a gate summary:
+Print a gate summary from the report:
 ```
-Quality (repo root):
+Quality (repo root, nax gates run):
   typecheck  PASS
   lint       PASS
   test       PASS
   build      (skipped — not configured)
+  e2e        (skipped — not configured)
 ```
 
 ## Step 7: Open or promote the MR/PR (only on explicit approval)
@@ -187,7 +197,7 @@ Now everything is green. Prepare the PR/MR, then either **open a new one** or **
 
 **Full mechanics live in `references/open-pr-mr.md`** — read the file before 7a, every run, even when you know it; do not work 7e–7g from memory. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e **detect whether a PR/MR already exists for the branch** and branch on it, 7f create a new one on approval (only when none exists), 7g promote an existing **draft → ready** on approval (leaving its autoPR body intact by default; a body refresh is offered, not forced). If a PR/MR already exists **and is already ready**, report its URL and stop — nothing to open. Leave the branch pushed if the user cancels.
 
-> **Workflow modes (Step 1c).** The PR/MR already exists, so go straight to 7g (promote) on explicit approval. Ticking the body checklist, the evidence comment, the green-checks rule and the never-promote-a-conflicting-PR rule are in `references/resume-from-workflow-draft.md` (Steps 3-8 section and Promotion).
+> **Workflow modes (Step 1c).** The PR/MR already exists. After 7b, promote with `nax workflow promote` (a dry run, then `--yes` on explicit approval): it checks that every open item is ruled and the checks are green on the pushed head, ticks the checklist, posts the evidence comment and marks the PR ready. Do not tick, comment or promote by hand except in the cases `references/resume-from-workflow-draft.md` (Promotion) names.
 
 ## Step 8: Record the resume decisions (resume modes only — required)
 
@@ -199,7 +209,7 @@ Write a sidecar beside the artifact you resumed from, recording how each escalat
 ```
 One entry per finding in the artifact — **every** finding, waivers included — each with a one-line `reason`, plus the resume's `outcome`. **Shape and field rules live in `references/resume-from-escalation.md`**; follow it rather than improvising the JSON.
 
-**Workflow modes (Step 1c).** Write the sidecar beside the result instead: `.nax/features/<featureName>/workflow/<runId>/decisions-<timestamp>.json`. Shape and field rules live in `references/resume-from-workflow-draft.md`.
+**Workflow modes (Step 1c).** Never write this sidecar by hand: `nax workflow record -f <featureName> --decisions <file>` validates the rulings and writes `.nax/features/<featureName>/workflow/<runId>/decisions-<timestamp>.json`, and `nax workflow promote --yes` records `promoted`. The entry format and the outcomes are in `references/resume-from-workflow-draft.md` ("Recording the decisions"); the timing rule below still holds.
 
 Write it as soon as triage is done and any fixes are committed, with `outcome: "pending"`. **`outcome` records what happened, never what is about to:** rewrite the same file after the step that settles it — after the promote/create call succeeds (`promoted` / `opened`, plus the `url`), after the ready audit ends (`verified-ready`), or when the user stops (`abandoned`, no `url`). **Do not defer the first write past Step 7** — if the user abandons the PR at the approval gate, the judgments they just made are still worth keeping. This file is the only record that a human ever ruled on these findings; nothing in nax writes it, and an unwritten one cannot be reconstructed.
 
@@ -247,7 +257,8 @@ If any gate was waived by the user, say so explicitly in the summary rather than
 | Pushing to `main`/`master` | Branch first (Step 7b) |
 | Claiming a clean pass after waiving a finding | State waived findings in the body and final summary |
 | Advancing past a red gate | Each gate is blocking unless the user explicitly waives it |
-| Running the gates in one shell loop and reporting exit 127 as "ran" | One tool call per gate; 127/126 means the gate did not run (Step 6) |
+| Spawning the gate commands yourself, or reporting a `not-run` gate as run | `nax gates run --json`; `not-run` (127/126) means the gate did not run (Step 6) |
+| Hand-building a workflow draft's open items, sidecar or checklist ticks on nax >= 0.89 | `nax workflow status`, `record` and `promote` (Steps 1c, 7, 8) |
 | Running a formatter's `--write` to clear a lint failure without asking | It is a proposed fix: approval first, then re-run every gate (Step 6) |
 | Writing the sidecar with the outcome you expect (`promoted`) before it happens | Write `pending`, then rewrite the outcome after the call that settles it (Step 8) |
 | Comparing against a local `main` that was never fetched | `git fetch origin` in the preflight; compare against `origin/<base>` or the workflow `seed` (Step 1) |
