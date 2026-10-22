@@ -1,265 +1,147 @@
 ---
 name: nax-finish
-description: Finalize a completed nax feature through to an opened MR/PR, or resume one that nax left unfinished: an escalated finish phase, or a workflow-mode draft PR. Resolves the feature spec (spec.md, .nax/specs/, docs/specs/, or prd.json fallback) and short-circuits if already merged. Reads the nax config for the repo's real quality and acceptance commands, drives acceptance tests green, runs post-impl-review in two phases (spec, then code-quality) in isolated subagents, triages findings with the user, runs the repo-root quality gates green with nax gates run, then opens a PR/MR with gh/glab or promotes a draft, only on explicit approval. For an escalated finish it loads findings from the finish-audit artifact; for a workflow draft it reads the open items with nax workflow status, clears each item, records rulings with nax workflow record, and promotes it. Both record the rulings. Triggers: "finish this nax feature", "nax-finish escalated", "nax-finish workflow draft", "/nax-finish <feature>".
+description: Show where a nax feature's PR/MR stands and take it the rest of the way through nax's own commands. Resolves the feature, reads the workflow run with nax workflow status, shows the PR, its open items and live CI, explains how a collaborator rules on an item by replying on its nax bot thread, and on explicit approval runs nax bot review then nax bot fix, which record the rulings and mark the draft ready once every item is settled and CI is green. When the feature has no PR yet, runs the repo-root gates with nax gates run and opens one on approval. For a draft published before nax 0.91.2 (no item index), records rulings with nax workflow record and promotes with nax workflow promote. Triggers: "finish this nax feature", "what is open on this nax PR", "nax-finish workflow draft", "/nax-finish <feature>".
 ---
 
 # nax-finish
 
-Finalize a completed nax feature: prove the changed feature's acceptance tests pass, review the implementation, fix what the user approves, prove the repo-root quality gates are green, and — only on explicit approval — open a PR/MR whose body summarizes the spec. This skill **orchestrates**; it delegates the actual review to the `post-impl-review` skill — which owns its own dispatch and runs the review in an isolated, read-only subagent, so only the findings come back — and runs the repo's own configured commands rather than inventing any.
+nax finishes its own PRs now. Inside `nax run`, workflow mode reviews the branch, repairs a failing CI run (`workflow.ciRepairRounds`, default 1) and publishes the PR, opening one nax bot thread per item a human must settle. A collaborator settles an item by replying on its thread, and `nax bot review` + `nax bot fix` record those rulings and mark the draft ready once every item is settled and CI is green on the head.
 
-**Order rationale:** the cheap, deterministic acceptance gate runs **before** the expensive LLM review — a feature that fails its own spec contract shouldn't consume a full review + triage. Review itself is **phased**: spec-relative review runs **first**, its drift is fixed, and only then does code-quality review run — against the now-stabilized diff, so the open-ended quality pass never judges code the spec-fixes are about to rewrite (and you never burn a triage round on throwaway lines). The heavy repo-root quality gate runs **last**, once, after all review fixes are in, so it isn't re-invalidated and re-run.
+This skill is the short helper on top: **here is the PR, here is what is open, here is how it gets settled**. It runs nax's commands; it never re-reviews the branch, re-runs acceptance, writes rulings into files by hand, or marks a PR ready itself.
 
-**Announce at start:** "Using nax-finish to finalize `<feature>`: config → acceptance → spec-review → fix → quality-review → fix → quality-gates → PR/MR." In resume mode (Step 1b), announce instead: "Using nax-finish to resume the escalated finish of `<feature>`: acceptance → triage <n> escalated finding(s) → fix → quality-gates → PR/MR." In workflow-draft mode (Step 1c), announce instead: "Using nax-finish to take the workflow draft of `<feature>` to ready: acceptance (if enabled) → clear <n> open item(s) → fix → quality-gates → promote draft."
+**Announce at start:** "Using nax-finish on `<feature>`: status -> PR and open items -> rulings -> nax bot review/fix." When the feature has no PR yet: "Using nax-finish on `<feature>`: gates -> open PR/MR."
 
-Work through the steps in order. **Each gate is blocking** — do not advance to the next step while the current one is red, unless the user explicitly tells you to proceed. When the harness has a todo tool, track the steps with it so the user can see where the run is.
+**Approval.** `nax bot review` and `nax bot fix` are billed agent sessions, and `nax bot fix` pushes to the PR branch. Ask before each launch, naming the command. Every code change, commit, push and forge write in this skill also needs explicit approval.
 
-**Where each part lives.** This file holds what every mode shares; the references hold the detail. **Opening a reference is the first action of the step that names it**: open it before you run anything in that step, and before you answer any question about that step, a dry run or plan included. Do not work from this file's summary, or from memory of an earlier read.
+**nax version.** This file is for nax >= 0.91.2 (`nax --version`). On an older nax, say so and ask the user to upgrade; this skill no longer carries the older paths. It no longer handles pipeline-mode escalated finish artifacts (`finish-audit/`) or runs acceptance tests: workflow mode turns acceptance off, and pipeline mode is frozen.
 
-| Reference | Read when |
-|:--|:--|
-| `references/resume-from-escalation.md` | Step 1b finds an `escalated` finish-audit artifact |
-| `references/resume-from-workflow-draft.md` | Step 1c finds a workflow result with outcome `draft` or `ready`; it also holds the workflow-mode changes to Steps 3-8 |
-| `references/acceptance.md` | Step 3 has an acceptance group to run |
-| `references/review-and-triage.md` | Steps 4-5 in the normal and escalated modes |
-| `references/open-pr-mr.md` | Step 7, every run |
-| `references/older-nax-fallback.md` | `nax features resolve` is unavailable or its output has no `acceptance` block, or `nax gates run` / `nax workflow` is unknown (nax < 0.89) |
+Run every `nax` command from `repoRoot` (the directory holding `.nax/`), or pass `-d <repoRoot>`.
 
-## Step 1: Resolve the feature and the spec source
+## Step 1: Resolve the feature
 
-`args` is the text typed after `/nax-finish`. `/nax-finish graphify-kb` gives `args = "graphify-kb"`; `/nax-finish` alone gives `args = ""`. When `args` is free text rather than a feature name, pass the token that names a `.nax/features/<name>` dir. When it names only a PR/MR (a number or URL), find the feature whose `.nax/features/*/workflow/*/result.json` has that `featureWorkflow.url`; if none matches, ask.
-
-Establish two things: **`featureName`** (the `.nax/features/<name>` directory the work belongs to) and a **spec source** — the best available description of intended behaviour. A spec source is one of:
-- **markdown spec** (preferred) — a human-authored `.md`, consumable directly by `post-impl-review`.
-- **PRD** (`prd.json`) — the structured stories+ACs nax generated from the spec. It is **always** present for a completed feature and is a valid requirements source when no markdown spec persists. (In practice most nax feature dirs keep only `prd.json`; the authored `.md` lives under `docs/specs/` or was a transient input to `nax plan`. Do not assume `spec.md` exists.)
-
-**Resolve deterministically via the nax CLI** — this is the single source of truth (`post-impl-review` uses the same command, so the two never disagree). Run:
-```bash
-nax features resolve "<args>" --json    # <args> may be empty
-```
-The command emits a JSON object on stdout with a `status` (and `featureName`, `specSource {kind,path}`, `acceptance {status,enabled,groups}` (on an `ok` result with a known feature — consumed in Step 3), `candidates`, `checked`, `message` as applicable). Branch on `status`:
-- **`ok`** → record `featureName` and `specSource = { kind, path }` from the output. Proceed.
-- **`ambiguous`** → list `candidates` numbered, ask the user to pick, then re-run `nax features resolve "<pick>" --json`.
-- **`missing`** → show the `checked` paths and ask the user to paste a spec path (or press enter to abort). On a path, re-run `nax features resolve "<path>" --json` (or accept it directly as the markdown spec). Abort only if they decline.
-- **`feature-not-found`** → if `candidates` is non-empty, treat like `ambiguous`; otherwise treat like `missing`.
-- **`not-a-nax-repo`** → print `Error: no .nax/ directory found — is this a nax repo? Run nax-setup first.` and stop.
-
-**Availability + fallback.** `nax features resolve` is available when its stdout is valid JSON carrying a `status` (exit `0` = `ok`, exit `2` = needs-human — both still emit JSON). It is **unavailable** on an older nax — stdout isn't JSON, or stderr shows `unknown command`. If unavailable, say so once and hand-resolve via the **Step 1 fallback** in `references/older-nax-fallback.md` (it mirrors the CLI's algorithm exactly, so the result is identical), then continue with the same `featureName` / `specSource` you record below.
-
-Record for later steps:
-- **`featureName`** — the `.nax/features/<name>` dir name (drives acceptance scoping in Step 3). If only a raw path was given with no matching feature dir, ask which feature dir it maps to when Step 3 needs it.
-- **`specSource`** — `{ kind: "markdown" | "prd", path }`.
-
-Read the spec source in full — the `.md` body, or the `prd.json` stories+ACs. If a markdown spec exists but is empty, print `Error: spec file is empty at <path>` and stop. Print `Feature: <featureName>` and `Spec: <path> (<kind>)`. (In workflow-draft and ready-audit modes, Step 1c, the spec is needed only to check a premise against it or to refresh the PR body in 7d; read the parts those need, when they come up.)
-
-**Preflight — is there anything to finish?** Run `git fetch origin` first: every later comparison against the base (this count, an advisor's file inventory, the fix diff) is wrong against a stale local branch. Detect the base branch (`git remote show origin | grep 'HEAD branch'`; fallback `main`, then `master`) and count commits ahead of the **remote** base:
-```bash
-git rev-list --count origin/<base>..HEAD 2>/dev/null
-```
-If `0`, the branch has nothing beyond base — the feature is already merged and there is nothing to review or ship. Print:
-```
-<featureName> is 0 commits ahead of <base> — already merged / nothing to finish.
-```
-and stop, unless the user explicitly tells you to proceed anyway. This fails fast on the same condition `post-impl-review` would hit at its empty-diff guard (Step 4), before spending Step 2's config read and Step 3's acceptance run.
-
-## Step 1b: Resume an escalated finish phase (only when an artifact exists)
-
-Nax's **finish phase** — the post-run phase it runs in-process after a successful `nax run` — can stop with `status: "escalated"`: it pushed its partial fixes and asked for human judgment, with no way back in. This skill is that way back. Resume **only** on `escalated`; every other status is a finished run. (Older nax ran the same logic as an external flow; the artifacts are identical, so nothing here depends on which produced them.)
-
-This runs after Step 1 because it needs the resolved `featureName` to find the directory. Take the newest `*.result.json` by mtime and read its `status`:
+`args` is the text after `/nax-finish` (may be empty). When it names a PR/MR (number or URL) rather than a feature, find the feature whose `.nax/features/*/workflow/*/result.json` has that `featureWorkflow.url`; if none matches, ask.
 
 ```bash
-# <outputDir> defaults to ~/.nax/<projectKey>; see the reference for the override
-# and identity cross-check, which you MUST do before trusting the key.
-ls -t <outputDir>/finish-audit/<featureName>/*.result.json 2>/dev/null | head -1
+nax features resolve "<args>" --json
 ```
 
-- **No artifact, unreadable, or `status` is anything but `escalated`** → say nothing and continue normally at Step 2. This is the ordinary case: only nax's finish phase writes these files, so a feature you finished by hand has none.
-- **`status: "escalated"`** → print the `escalationReason` and the findings, confirm with the user that these are still live (they may have fixed them by hand since), and on confirmation run in **resume mode**: Step 4 loads findings from the artifact instead of deriving them, and Step 8 becomes required.
+Branch on `status`: `ok` -> record `featureName`; `ambiguous` (or `feature-not-found` with `candidates`) -> list the candidates, ask, re-run with the pick; `missing` / `feature-not-found` with no candidates -> show `checked` and ask; `not-a-nax-repo` -> tell the user this is not a nax repo (no `.nax/config.json`; run nax-setup first) and stop. The spec is not read here; read it only when an item needs it.
 
-**Read `references/resume-from-escalation.md` before acting on an artifact** — it owns artifact discovery (the `outputDir` override, `projectKey` derivation, the `.identity` cross-check, the legacy repo-local path), the full result shape and round outcomes, and the sidecar contract.
+**Preflight.** `git fetch origin`, detect the base (`git remote show origin | grep 'HEAD branch'`, fallback `main`, then `master`), and run `git rev-list --count origin/<base>..HEAD`. `0` -> print `<featureName> is 0 commits ahead of <base> — already merged / nothing to finish.` and stop unless the user says to go on.
 
-## Step 1c: Resume a workflow-mode draft (only when a workflow result exists)
-
-nax's **workflow mode** runs per-story review and fix rounds, then one branch review and up to `workflow.maxBranchFixRounds` (default 2) branch fix and re-review rounds, and publishes the PR/MR as a **draft** whenever anything needs a human, or as **ready** when nothing deterministic holds it back and the advisor approves (the `finish-approval` decision). Nothing in nax takes a draft to ready, and nothing re-checks an advisor-approved ready PR. This skill does both: it resumes on outcome `draft` (workflow-draft mode) and audits outcome `ready` (ready-audit mode).
-
-Like Step 1b, this needs the resolved `featureName`. Ask nax for the newest workflow run's verdict. Run every `nax workflow` and `nax gates` command from `repoRoot` (the directory holding `.nax/`), or pass `-d <repoRoot>`: they default to the current directory.
+## Step 2: Read the run
 
 ```bash
 nax workflow status -f <featureName> --json
 ```
 
-It exits `0` (ready, nothing open), `2` (something needs a human) or `1` (error, `{"error": …}` on stdout). On nax older than 0.89 it prints no JSON or `unknown command`: say so once and read the run by hand per `references/older-nax-fallback.md` ("Workflow draft on nax < 0.89"), branching on `featureWorkflow.outcome` the same way.
+Exit `0` = ready with nothing open, `2` = something needs a human, `1` = error (`{"error": …}`). Branch:
 
-- **Exit `1` with `no workflow result for feature …` or `… has not started its feature steps`, or no `outcome` in the JSON** → say nothing and continue normally at Step 2 (for a run with no `outcome`, say the workflow did not publish). This is the ordinary case: only a workflow-mode run writes these files. Any other error → report it.
-- **`outcome` is `ready`** (written as `opened` by older nax) → the PR/MR is already ready, but "ready" is often an advisor's call (nax asks the advisor for approval when nothing deterministic holds the PR back). Run in **ready-audit mode**: the same open-items list minus promotion. Verify every advisor decision, the readiness approval included; verify the ledger cannot-verify lines; and read the PR's live CI checks. Nothing open → report it clean, with the evidence, and stop. Something open → triage it like a draft item, push fixes to the same PR, and record it as below. For a blocking item, **offer** to convert the PR back to draft (`gh pr ready --undo` / `glab mr update <iid> --draft`) while it is fixed, then re-promote. Never flip it without the user's approval.
-- **`local-only`** (no forge, push failed, or `workflow.publish: none`) or **`pushed`** (`workflow.publish: push`; branch pushed, no PR) — `skipped` on older nax → continue normally; Step 7 offers to open one.
-- **`draft`** → print `reasons` and the open items (`openItems` plus the supplementary items the reference lists), confirm with the user that they are still live (they may have fixed some by hand since), and on confirmation run in **workflow-draft mode**: Steps 3-8 change as the reference's "Steps 3-8 in workflow modes" section says, and Step 8 becomes required.
+- **Exit `1` with `no workflow result for feature …` or `… has not started its feature steps`** -> no workflow run: go to Step 6.
+- **`outcome` absent, `local-only` or `pushed`** -> no PR yet: go to Step 6 (say which).
+- **`outcome` `draft` or `ready` with a `url`** -> Step 3.
+- Any other error -> report it and stop.
 
-**Ready-audit mode** follows the same workflow-mode changes for Steps 3, 4, 5, 6 and 8, and skips only the promotion in 7f/7g. So acceptance (Step 3) and the repo-root gates (Step 6) still run. A **blocking item** in ready-audit mode is a red required CI check, an advisor decision whose premise turned out false, or a CRITICAL/HIGH finding; only those make the skill offer to convert the PR back to draft.
+## Step 3: Show the PR and what is open
 
-If Step 1b also found an escalated finish-audit artifact, ask the user which one they mean to resume; do not merge them.
+Gather, then print in one block:
 
-**Read `references/resume-from-workflow-draft.md` before acting on the result** — it owns the `nax workflow status` output, the items `openItems` does not hold, how each kind of item is handled, recording with `nax workflow record`, promoting with `nax workflow promote`, and how Steps 3-8 change in workflow modes.
+1. **PR state and head:** `gh pr view <url> --json number,isDraft,headRefOid,url` (GitLab: `glab mr view <iid>`).
+2. **Live CI on the head:** `gh pr checks <url> --json name,state,bucket,link` (GitLab: `glab ci status --branch <branch>`). `pass`/`skipping` green, `fail`/`cancel` red, `pending` pending. The status JSON's `ci` is a publish-time snapshot; trust the live read.
+3. **Open items:** `openItems` from Step 2, grouped by kind, each with its id, severity, `file:line`, the full issue, the suggestion and any advisor ruling. Do not truncate. Then `supplementaryItems` under "Also to verify (not blocking)".
+4. **Does the PR carry the item index?** It is a top-level nax bot comment ending in `<!-- nax-bot:v1 key=w-index -->`:
+   ```bash
+   gh pr view <url> --json comments --jq '[.comments[].body | select(contains("key=w-index -->"))] | length'
+   glab api "projects/:id/merge_requests/<iid>/notes?per_page=100" | grep -c 'key=w-index -->'
+   ```
+   - **Index present** -> the rulings live on the PR: Steps 4-5.
+   - **No index** (published before nax 0.91.2, or item posting failed at publish) -> **open `references/legacy-draft.md` now and follow it** instead of Steps 4-5. `nax bot fix` holds such a PR with `no nax item index on this PR`.
 
-## Step 2: Understand the nax config (quality + acceptance commands)
+If nothing is open, CI is green and the PR is ready, report it clean with the head sha and stop. A ready PR with open items or red CI is not clean: say so, and carry on to Step 4.
 
-Before running anything, learn what *this* repo runs. Never hardcode `bun test` / `npm run lint` / etc. — read them from config.
+## Step 4: Settle the items
 
-**Find repoRoot:** the directory containing `.nax/`. Usually the cwd; if `.nax/` isn't in cwd, walk up until you find it. If there is no `.nax/` directory, print `Error: no .nax/ directory found — is this a nax repo? Run nax-setup first.` and stop.
+Only a collaborator with write access rules. A reply from anyone else (a PR author without write access, other bots) is conversation, never a ruling. Resolving a thread without replying does not rule.
 
-**Read root config:**
+**How to rule:** reply on the item's thread (its first line reads `Open item **<id>** (<kind>): …`). A reply whose first line starts with a keyword is read directly:
+
+| Reply | Records |
+|:--|:--|
+| `fixed <sha>` (7-40 hex), optional reason after ` — `, ` - ` or `: ` | `fixed` at that commit |
+| `waive: <reason>` / `waived: <reason>` | `waived` (reason required) |
+| `confirm` / `confirmed`, optional `: <reason>` | `confirmed` (advisor ruling upheld) |
+| `override: <reason>` / `overridden: <reason>` | `overridden` (advisor ruling reversed; reason required) |
+| `verified` / `verify`, optional `: <reason>` | `verified` (cannot-verify or already-fixed item) |
+
+Any other collaborator reply is read by one model call and recorded only when its meaning is clear; otherwise nax bot asks in the thread. nax bot echoes each ruling it records (`Recorded: …`); a later reply replaces the earlier ruling. nax bot itself can only ever record `fixed`, and only `nax bot review` does so, when it re-checks an item after a push.
+
+The user writes the replies on the PR. Your job is to make each ruling well-founded before it is written:
+
+- **Advisor decisions** (`advisor` and `ruling` items): verify the premise first. "already fixed by `<sha>`" -> `git show <sha>`, read the code at `file:line`, run the named or nearest test. "out of scope" -> find the spec or PRD line. `waive` -> confirm the risk is the one described, no larger. `defer` is not resolved: no later step remains, so it needs a fix or an explicit waive now.
+- **Cannot-verify items:** actually run the commands or read the code paths the text names, and give the evidence to put in the `verified: <reason>` reply. If it cannot be checked here, say so; the user may waive it.
+- **Findings** (`finding`): either leave them to nax bot (Step 5: `nax bot fix` pushes the fix, the next `nax bot review` records `fixed`), or fix by hand on approval: commit, push, then the user replies `fixed <sha>`. A finding whose suggestion names a missing test is not fixed until that test exists and passes.
+- **Red gate** (`gate`): reproduce with `nax gates run --gate <name> --json`, fix on approval, push; the user replies `fixed <sha>` (or the next workflow publish closes it). nax bot may attempt a code fix for any open item thread, but only a reply or the next publish settles a gate item.
+- **Story** (`story`): read `<runDir>/<storyId>/` and the PRD for what is missing; fix it like a finding, or the user waives it.
+- **Red CI on the head:** CI is not an item thread; it gates readiness directly. `nax run` already spent its repair rounds, and `nax bot fix` does not repair CI. Read the failing job's log (`gh run view <run-id> --job <job-id> --log-failed`, ids in the check's `link`; GitLab: the job trace), find the root cause before proposing anything, fix on approval, push, and wait for the new head at most about 15 minutes (`gh pr checks <url> --watch --fail-fast`). Re-run a job only for a proven infrastructure flake.
+
+To prove a test catches a defect, run it against the pre-fix commit in a throwaway `git worktree`, never with `git stash` in the live tree.
+
+Before any push, reconcile the tree and stay off the base branch (`references/open-pr-mr.md` 7b).
+
+`CI conflicting` means the PR has merge conflicts with the base: resolve them (rebase or merge the base, on approval), push, and review again; never ready a conflicting PR. `CI no-checks` (the repo has no CI) can never go green, so `nax bot fix` never readies the PR: the only way out is the user waiving CI by name and marking the PR ready by hand (`gh pr ready <url>` / `glab mr update <iid> --ready`), on explicit approval, once every item is settled.
+
+Hold judgments until the user has seen the whole list, and confirm the items are still live (some may have been fixed by hand since publish).
+
+## Step 5: Run nax bot
+
+On explicit approval, from `repoRoot`:
+
 ```bash
-cat .nax/config.json 2>/dev/null
-```
-Extract:
-- `quality.commands` → `build`, `typecheck`, `lint`, `test`, `e2e` (the **unscoped** variants — Step 6 runs the whole repo, not a scoped subset). A gate whose command is unset is **skipped**, not failed — an unset command is the only way a gate is off. (`quality.requireTypecheck` / `requireLint` / `requireTests` no longer exist; nax rejects them at parse time, so no config you read will carry one.)
-- `acceptance.enabled` (default `true`), `acceptance.command` (optional explicit runner, may contain a `{{FILE}}` placeholder), `acceptance.testPath` (default filename, e.g. `.nax-acceptance.test.ts`).
-- `project.language` if present (drives the acceptance test-file extension).
-- `project.type` if present — `"monorepo"` is the **authoritative** monorepo signal; trust it over any directory probe.
-
-**Detect monorepo:** treat the repo as a monorepo if **either** `project.type === "monorepo"` **or** any per-package config exists. Per-package configs mirror the workspace tree and can be nested arbitrarily deep (`.nax/mono/packages/core/config.json`, `.nax/mono/apps/api/config.json`), so use a recursive `find`, **not** a fixed-depth glob:
-```bash
-# ✅ recursive — matches nested .nax/mono/<group>/<pkg>/config.json
-find .nax/mono -name config.json 2>/dev/null
-# ❌ WRONG — `ls .nax/mono/*/config.json` only sees one level and silently
-#    misses .nax/mono/packages/* and .nax/mono/apps/*, mis-detecting single-package
-```
-Each match's directory (relative to `.nax/mono/`) is a `packageDir` — e.g. `.nax/mono/packages/core/config.json` → `packageDir = packages/core`. For **acceptance** (Step 3) a package's config may override `acceptance.testPath`/`command` — honour the per-package value for that package. For **repo-root quality** (Step 6) you still run the **root** `quality.commands` only; in a well-configured monorepo those delegate to the orchestrator (turbo/nx/workspace script) and cover every package. Do **not** loop over per-package quality commands here — the user asked specifically for the repo-root gates.
-
-Print a one-line config summary so the user can sanity-check it, e.g.:
-```
-Config: single-package · quality: build,typecheck,lint,test · acceptance: enabled (.nax-acceptance.test.ts)
-```
-or
-```
-Config: monorepo (6 pkgs, project.type=monorepo) · root quality: typecheck,lint,test (build unset) · acceptance: enabled
-```
-If a gate the user expects is missing (e.g. no `test` command at all), say so plainly — don't silently skip it.
-
-## Step 3: Acceptance tests green (changed feature only) — fail-fast gate
-
-Run this **before** the review: it is the cheap, deterministic proof that the feature meets its own spec contract. Scope it to the feature being finished, using the `acceptance` block Step 1's `nax features resolve` returned. Branch on `acceptance.status`:
-- **`disabled`** → print `Acceptance disabled in config — skipping.` and go to Step 4.
-- **`no-prd`** → no `prd.json` resolved for the feature; list the feature dir checked and ask the user for the acceptance test path (or whether acceptance was generated at all). Do not silently skip.
-- **`ok`** → **open `references/acceptance.md` now and follow it** to run every group whose `exists` is `true`. In workflow modes a group with `exists: false` is expected (the workflow never generates one): skip it with a note, as the workflow reference says.
-
-Two rules from that file hold for every group, because getting them wrong reads like a missing test rather than a wrong directory: run each group with **cwd = `<repoRoot>/<packageDir>`** (the group's `command` is package-relative; never run a group with a non-empty `packageDir` from `repoRoot`), and substitute the **absolute** `<repoRoot>/<testPath>` for `{{FILE}}`. `No test files found`, `Script not found`, or a missing `.nax/…config` means a wrong cwd or path, not a missing test: fix the invocation and re-run.
-- **No `acceptance` block** (older nax) → resolve the targets per the Step 3 fallback in `references/older-nax-fallback.md`, then run them per `references/acceptance.md`.
-
-The run must be **green** for every group before Step 4.
-
-## Steps 4-5: Review and triage
-
-- **Normal mode and escalated resume (Step 1b)** → **open `references/review-and-triage.md` now and follow it.** It owns the phased review, the collapsed run for a trivial diff, the resume-mode use of the artifact's findings, and the fix-verification ladder. In outline: invoke the `post-impl-review` skill with `--phase spec <specSource.path>` (never dispatch the review subagent yourself), fix its drift, then `--phase quality`; collapse to one `--phase full` pass only for a diff of about 3 files and 150 lines or less. Verify fixes at the cheapest sufficient level: nothing for waived or LOW-only, one targeted verification subagent for fixes to a bounded set of files, a same-phase re-run only for broad or structural fixes.
-- **Workflow-draft and ready-audit modes (Step 1c)** → do not run `post-impl-review`. Triage the open items per `references/resume-from-workflow-draft.md`.
-
-In every mode: apply nothing without explicit user approval, re-run the feature's acceptance tests after any fix that changed code, and do not advance to Step 6 while a CRITICAL or HIGH item is open and unaddressed, or acceptance is red, unless the user explicitly waives it. Note waived findings; they belong in the PR/MR body.
-
-## Step 6: Repo-root quality gates green
-
-Run the **repo-root** quality commands — every gate that is configured *and* required — from `repoRoot`, regardless of whether the repo is single-package or a monorepo. In workflow-draft mode this is required: the tree changed after the workflow's final gates.
-
-Run them through nax, which resolves `quality.commands` exactly as its own finish phase does (global config, project file, active profile) and runs `build -> typecheck -> lint -> test -> e2e`, skipping any gate whose command is unset (the only way a gate is off):
-```bash
-nax gates run --json
-```
-Never spawn the gate commands yourself. On nax older than 0.89 (`unknown command`, or no JSON on stdout), say so once and follow the Step 6 fallback in `references/older-nax-fallback.md`.
-
-It runs the root, **unscoped** commands only, never `formatFix`/`formatFixScoped`/`lintFix`, and every selected gate even after a red one. Read the JSON report (`passed`, `gates[]` with `name`, `status`, `exitCode`, `durationMs`, `outputTail`, `summary`) and the exit code:
-- **`0`** — at least one gate ran and every gate is `passed`.
-- **`2`** — a gate is not green, or nothing is configured (`gates: []`: say so plainly; nothing was verified, which is not a pass). Per gate: `failed` is a real failure; `not-run` (exit 127, 126, or a spawn error) means the gate **did not run**: a missing tool or a broken command, not a defect and never a pass; fix the environment or the config and re-run. `timed-out` ran past 15 minutes. A `failedPhase: "setup"` gate failed in its `e2eSetup` bootstrap.
-- **`1`** — nax could not run the gates: `{"error": …}`. `Project not trusted: <dir>` carries the grant command (`nax trust add <dir>`): show it and ask the user to run it, never grant trust yourself. Otherwise (no nax project, invalid config), report the message.
-
-Re-run one gate while fixing with `nax gates run --gate <name> --json` (repeatable), then finish with a full run.
-
-**Never run `formatFix`/`formatFixScoped`/`lintFix` as a gate**: they mutate files, so a green from one proves only that it rewrote the tree.
-
-**A formatter is a fix, not a gate step.** When a gate fails on formatting (biome, prettier, gofmt, ruff format), the formatter write (`formatFix`, `lintFix`, `biome format --write`, …) is a proposed fix like any other: list the files it will rewrite, apply it only on explicit approval (or as part of an approved fix batch that named it), then re-run **every** gate — build, typecheck and test as well as the one that failed.
-
-Every run must be **green (exit 0)**. If any gate fails:
-1. Show the failing output.
-2. Propose fixes and apply them **with user approval**.
-3. Re-run that gate (and any gate the fix could affect), then the full `nax gates run`. Loop until all configured gates pass. Do not advance while any gate is red unless the user explicitly waives it.
-
-Print a gate summary from the report:
-```
-Quality (repo root, nax gates run):
-  typecheck  PASS
-  lint       PASS
-  test       PASS
-  build      (skipped — not configured)
-  e2e        (skipped — not configured)
+nax bot review <pr-number>     # records rulings, re-checks earlier findings, answers threads
+nax bot fix <pr-number>        # fixes agreed findings and pushes; readies the draft once all is settled
 ```
 
-## Step 7: Open or promote the MR/PR (only on explicit approval)
+Both take `--profile <name>` and `--model <value>`; `review` also takes `--decisions <path>`. Always review first: `nax bot fix` refuses with `no nax bot review of head <sha>; run nax bot review <n> first` when the head has moved since the last review, so any push (yours or a CI fix) needs a fresh review before fix. On a workflow PR whose head the branch review already covered, the review reads only the conversation and the commits pushed after publish.
 
-Now everything is green. Prepare the PR/MR, then either **open a new one** or **promote the existing draft to ready** — **only after the user explicitly approves**. Ask that approval **once**, as one question. Its options are the actions you can take (for example commit + push + promote, commit + push only, show the diff first) and, when any fix changed runtime behaviour (anything beyond formatting, renames, comments or tests), **a targeted review of the fix diff first** (Step 5's targeted-verification subagent, `references/review-and-triage.md`; in workflow modes, the workflow reference's "Targeted review of the fix diff"). Re-ask only a question that got no answer. nax's **autoPR** may already have opened a PR/MR for the branch (draft or ready) during the run, so this step **detects first** and never blindly creates.
+Read the result:
 
-**Full mechanics live in `references/open-pr-mr.md`** — read the file before 7a, every run, even when you know it; do not work 7e–7g from memory. It covers, in order: 7a detect platform (`gh`/`glab`) + base branch, 7b ensure a pushable branch and reconcile the working tree (`git status --porcelain` before push — catches both nax-leftover and your-own-uncommitted fixes; never push dirty or to `main` without approval), 7c find a PR/MR template, 7d compose the body from the **spec**, 7e **detect whether a PR/MR already exists for the branch** and branch on it, 7f create a new one on approval (only when none exists), 7g promote an existing **draft → ready** on approval (leaving its autoPR body intact by default; a body refresh is offered, not forced). If a PR/MR already exists **and is already ready**, report its URL and stop — nothing to open. Leave the branch pushed if the user cancels.
+- **Review exit `0`:** `… N findings posted, M threads answered …` plus the artifact path. A warning `no check commands found on the base branch; nax bot fix will refuse` means fix cannot run gates: report it.
+- **Fix exit `0`:** `pushed <sha>` or `nothing to fix`. Either way, on a draft, it then applies the readiness rule: every indexed item settled and CI green on the head. After `pushed`, the items it fixed are still open (fix only replies `… Run nax bot review to check it.`), so the draft stays a draft: run `nax bot review` again, which records `fixed` for each item it confirms, then `nax bot fix`, which ends `nothing to fix` and readies the draft. On a PR that is already ready, fix reports nothing about readiness: use Step 3's live reads. Read its nax bot summary comment on the PR (one comment, edited in place each run): `Marked ready.` is done; `Kept as draft: <reason>` names what still holds it (`<n> open item(s): <ids>` -> after a push, review then fix again; otherwise back to Step 4; `CI pending: …` -> wait, then run `nax bot fix` again on the same head; `CI failed: …` -> Step 4's red-CI item; `CI conflicting: …` / `CI no-checks: …` -> Step 4's notes on those two).
+- **Exit `1`:** bad input (PR number, `--model`) or an error nax threw: report it.
+- **Exit `2`:** the reason is on stderr; when gates failed or the push did not land, the summary comment says so too. `untrusted PR: …` and `head branch is in another repository` are refusals by design; report them. `no check commands found on the base branch; …` needs `quality.commands` merged to the base first. `callOp[…]: no dispatch completed` usually means the agent has no credentials: check `nax auth list`.
 
-> **Workflow modes (Step 1c).** The PR/MR already exists. After 7b, promote with `nax workflow promote` (a dry run, then `--yes` on explicit approval): it checks that every open item is ruled and the checks are green on the pushed head, ticks the checklist, posts the evidence comment and marks the PR ready. Do not tick, comment or promote by hand except in the cases `references/resume-from-workflow-draft.md` (Promotion) names.
+Re-read Step 3 after each run and show what changed. Stop when the PR is ready, or when the user stops; leave the branch pushed.
 
-## Step 8: Record the resume decisions (resume modes only — required)
+## Step 6: No PR yet
 
-Skip this step entirely on an ordinary run; it applies only when Step 1b or Step 1c entered a resume mode.
+The feature has no workflow PR (no workflow run, `local-only`, or `pushed`).
 
-Write a sidecar beside the artifact you resumed from, recording how each escalated finding was ruled on:
-```
-<outputDir>/finish-audit/<featureName>/<runId>.decisions-<timestamp>.json
-```
-One entry per finding in the artifact — **every** finding, waivers included — each with a one-line `reason`, plus the resume's `outcome`. **Shape and field rules live in `references/resume-from-escalation.md`**; follow it rather than improvising the JSON.
-
-**Workflow modes (Step 1c).** Never write this sidecar by hand: `nax workflow record -f <featureName> --decisions <file>` validates the rulings and writes `.nax/features/<featureName>/workflow/<runId>/decisions-<timestamp>.json`, and `nax workflow promote --yes` records `promoted`. The entry format and the outcomes are in `references/resume-from-workflow-draft.md` ("Recording the decisions"); the timing rule below still holds.
-
-Write it as soon as triage is done and any fixes are committed, with `outcome: "pending"`. **`outcome` records what happened, never what is about to:** rewrite the same file after the step that settles it — after the promote/create call succeeds (`promoted` / `opened`, plus the `url`), after the ready audit ends (`verified-ready`), or when the user stops (`abandoned`, no `url`). **Do not defer the first write past Step 7** — if the user abandons the PR at the approval gate, the judgments they just made are still worth keeping. This file is the only record that a human ever ruled on these findings; nothing in nax writes it, and an unwritten one cannot be reconstructed.
+1. **Gates:** `nax gates run --json` from `repoRoot`. Exit `0` = every gate passed; `2` = a gate is `failed`, `not-run` (exit 127/126: a broken tool or command, never a pass), `timed-out`, or nothing is configured (`gates: []`, which verifies nothing); `1` = nax could not run them (`Project not trusted: <dir>` carries the grant command: show it, never grant trust yourself). Fix red gates on approval and re-run with `--gate <name>`, then a full run. Never run `formatFix`/`lintFix` as a gate; a formatter write is a proposed fix.
+2. **Open the PR/MR:** **open `references/open-pr-mr.md` now and follow it**, on explicit approval.
+3. **Review:** offer `nax bot review <pr-number>` on the new PR (approval, billed). It is the review for a feature nax's workflow did not review.
 
 ## Final summary
 
-Close with a one-line verdict the user can scan — reflect what actually happened to the PR/MR (opened new, promoted draft→ready, or already ready):
+One line the user can scan, reflecting what actually happened:
+
 ```
-nax-finish: <feature> — acceptance PASS · review ALIGNED · quality PASS · MR opened: <url>
-nax-finish: <feature> — acceptance PASS · review ALIGNED · quality PASS · MR promoted to ready: <url>
-nax-finish: <feature> — acceptance PASS · review ALIGNED · quality PASS · MR already ready: <url>
+nax-finish: <feature> — PR <url> ready · items 4/4 settled (2 fixed, 1 waived, 1 confirmed) · CI green on <sha7>
+nax-finish: <feature> — PR <url> still draft · kept: 1 open item(s): D-1 · CI green on <sha7>
+nax-finish: <feature> — PR opened <url> · gates PASS · nax bot review posted 2 findings
 ```
-In resume mode, report the escalation's disposition instead of a review verdict, and name the sidecar:
-```
-nax-finish: <feature> — resumed escalation (3 findings: 1 fixed, 2 waived) · acceptance PASS · quality PASS · MR opened: <url>
-  decisions: <outputDir>/finish-audit/<feature>/<runId>.decisions-<timestamp>.json
-```
-In workflow-draft mode, report the open items' disposition and name the sidecar:
-```
-nax-finish: <feature> — resumed workflow draft (2 items: 1 fixed, 1 verified) · acceptance skipped (not generated by workflow) · quality PASS · checks green on <sha> · PR promoted to ready: <url>
-  decisions: .nax/features/<feature>/workflow/<runId>/decisions-<timestamp>.json
-```
-In ready-audit mode, report the audit and the head the checks went green on:
-```
-nax-finish: <feature> — ready audit (4 items: 3 verified, 1 fixed) · acceptance skipped (not generated by workflow) · quality PASS · checks green on <sha> · PR verified ready: <url>
-  decisions: .nax/features/<feature>/workflow/<runId>/decisions-<timestamp>.json
-```
-Use `acceptance PASS (<n> tests)` instead whenever an acceptance group actually ran.
-If any gate was waived by the user, say so explicitly in the summary rather than implying a clean pass.
+
+Name any waived gate, check or item explicitly; never imply a clean pass.
 
 ## Common mistakes
 
 | Mistake | Do instead |
-|:--------|:-----------|
-| Skipping acceptance or the quality gates because the finish phase already ran them | It ran them against a tree that has since changed — both re-run in resume mode (Steps 3, 6) |
-| Finishing a resume without writing the decisions sidecar | It is the only record of the human ruling — write it even when the PR is abandoned (Step 8) |
-| Hand-resolving the spec with `ls`/`find` when `nax features resolve` exists | Run `nax features resolve "<args>" --json` and branch on `status`; only hand-resolve via the documented Fallback when the command is unavailable on older nax (Step 1) |
-| Hardcoding `bun test` / `npm run lint` | Read `quality.commands.*` and `acceptance.command` from config (Step 2) |
-| Detecting monorepo with `ls .nax/mono/*/config.json` | Use `find .nax/mono -name config.json` (configs nest deeper) and trust `project.type: "monorepo"` (Step 2) |
-| Applying acceptance/review/quality fixes but never committing them — PR ships the unfixed code | Treat Step 7b as the reconciliation point: `git status --porcelain` before push catches both nax-leftover and your-own-uncommitted fixes; commit (with approval) or explicitly leave out (Step 7b) |
-| Looping per-package quality in a monorepo | Run the **root** `quality.commands` once — they fan out via the orchestrator (Step 6) |
-| Applying review/fix changes without asking | Every fix needs explicit user approval (Steps 3, 5, 6) |
-| Opening the PR/MR automatically | Show body, open/promote **only** on explicit approval (Step 7f/7g) |
-| Blindly `gh pr create` / `glab mr create` when nax autoPR already opened one | Detect first (7e); create only if none exists, promote draft→ready if a draft exists, report-and-stop if already ready (Step 7e–7g) |
-| Overwriting the autoPR body when promoting a draft | Leave the existing body intact by default; offer a spec-body refresh, apply only on explicit approval (Step 7g) |
-| Pushing to `main`/`master` | Branch first (Step 7b) |
-| Claiming a clean pass after waiving a finding | State waived findings in the body and final summary |
-| Advancing past a red gate | Each gate is blocking unless the user explicitly waives it |
-| Spawning the gate commands yourself, or reporting a `not-run` gate as run | `nax gates run --json`; `not-run` (127/126) means the gate did not run (Step 6) |
-| Hand-building a workflow draft's open items, sidecar or checklist ticks on nax >= 0.89 | `nax workflow status`, `record` and `promote` (Steps 1c, 7, 8) |
-| Running a formatter's `--write` to clear a lint failure without asking | It is a proposed fix: approval first, then re-run every gate (Step 6) |
-| Writing the sidecar with the outcome you expect (`promoted`) before it happens | Write `pending`, then rewrite the outcome after the call that settles it (Step 8) |
-| Comparing against a local `main` that was never fetched | `git fetch origin` in the preflight; compare against `origin/<base>` or the workflow `seed` (Step 1) |
-| Promoting a workflow draft without clearing its open items | The draft means something needs a human; promote only when every item is fixed, verified, confirmed, or explicitly waived (Step 1c) |
+|:--|:--|
+| Re-running a full review or acceptance on a workflow PR | The run reviewed the branch; `nax bot review` covers what came after |
+| Writing rulings into `decisions-*.json`, ticking the checklist or marking the PR ready by hand | Rulings are thread replies; `nax bot fix` readies the PR (legacy drafts: `nax workflow record` / `promote`) |
+| Running `nax bot fix` after a push without a new review | Review the new head first, or fix refuses |
+| Confirming an advisor decision on its own rationale | Verify the premise (commit, code, test) and give the evidence |
+| Treating the status JSON's `ci` as live | Read the live checks on the current head |
+| Expecting `nax bot fix` to repair CI, record rulings, or ready the draft in the run that pushed | Fix CI from the log; after a push run review then fix again; gate items need a reply or the next publish |
+| Treating a reply from someone without write access as a ruling | Only collaborators with write access rule |
+| Launching `nax bot review` / `fix` unasked | Both are billed and `fix` pushes: ask at each launch |
+| Pushing with a dirty tree or to the base branch | `git status --porcelain` first; branch off the base (`references/open-pr-mr.md` 7b) |
