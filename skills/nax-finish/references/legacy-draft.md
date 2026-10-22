@@ -2,7 +2,7 @@
 
 A workflow PR published before nax 0.91.2, or one whose item posting failed at publish, has no nax bot item index, so nobody can rule on it from the PR and `nax bot fix` holds it (`no nax item index on this PR`). Its rulings go through the local commands instead: `nax workflow record` writes them to the run's decisions sidecar, and `nax workflow promote` checks them and marks the PR ready. Never write or edit the sidecar, tick the checklist or post the evidence comment by hand.
 
-Triage each item exactly as Step 4 says (verify advisor premises, give cannot-verify evidence, fix with approval). Only the recording differs: the user tells you the ruling, and you record it.
+Prepare each item exactly as Step 3 says (verify advisor premises, give cannot-verify evidence, plan fixes), and put the drafted rulings, the fixes, the `record` and the `promote --yes` in the one Step 4 approval. Only the recording differs: you write the rulings to a file and record them, instead of posting thread replies. `nax bot fix` never readies such a PR (`no nax item index on this PR`), so promote is the way out.
 
 ## Record the rulings
 
@@ -34,10 +34,10 @@ Triage each item exactly as Step 4 says (verify advisor premises, give cannot-ve
 
 Push first (`references/open-pr-mr.md` 7b), from the checkout whose `HEAD` is the pushed head.
 
-1. **Dry run:** `nax workflow promote -f <featureName> --json`. Exit `0` = ready to promote. Exit `2`: `items-ruled` failed -> rule and `record`; `ci-green` failed with `ci pending` -> wait at most about 15 minutes and dry-run again; `ci failed` / `unavailable` -> fix as Step 4's red-CI item (a head mismatch means push first); `ci conflicting` -> merge conflicts with the base: resolve them, push, dry-run again (never promote a conflicting PR); `ci no-checks` -> no CI, see the hand-ready case below. Exit `1` is an error that wrote nothing (not a draft, no PR url, already ready): report it.
-2. **On explicit approval:** `nax workflow promote -f <featureName> --yes --json`. It ticks the checklist, posts the evidence comment, marks the PR ready and records `promoted`. `promote stopped at <action>: <detail>` means a forge command failed and earlier actions stayed done: fix the cause and re-run `--yes` (a re-run may post a second evidence comment if the first went through; say so). If the PR turned ready but the sidecar write failed, run `nax workflow record -f <featureName> --outcome promoted`; do not run `promote` again.
+1. **Dry run:** `nax workflow promote -f <featureName> --json`. Exit `0` = ready to promote. Exit `2`: `items-ruled` failed -> rule and `record`; `ci-green` failed with `ci pending` -> wait at most about 15 minutes and dry-run again; `ci failed` / `unavailable` -> fix as Step 3's red-CI row (a head mismatch means push first); `ci conflicting` -> merge conflicts with the base: resolve them, push, dry-run again (never promote a conflicting PR); `ci no-checks` -> no CI, see the hand-ready case below. Exit `1` is an error that wrote nothing (not a draft, no PR url, already ready): report it.
+2. **Within the Step 4 approval:** `nax workflow promote -f <featureName> --yes --json`. It ticks the checklist, posts the evidence comment, marks the PR ready and records `promoted`. `promote stopped at <action>: <detail>` means a forge command failed and earlier actions stayed done: fix the cause and re-run `--yes` (a re-run may post a second evidence comment if the first went through; say so). If the PR turned ready but the sidecar write failed, run `nax workflow record -f <featureName> --outcome promoted`; do not run `promote` again.
 
-**When `promote` cannot be used** (the user waives a red required check by name, or the repo has no CI at all, `no-checks`), and only with explicit approval: record the rulings first, mark the PR ready by hand (`gh pr ready <url>` / `glab mr update <iid> --ready`), then `nax workflow record -f <featureName> --outcome promoted`.
+**When `promote` cannot be used** (the user waives a red required check by name, or the repo has no CI at all, `no-checks`), and only when the approval named that waiver: record the rulings first, mark the PR ready by hand (`gh pr ready <url>` / `glab mr update <iid> --ready`), then `nax workflow record -f <featureName> --outcome promoted`.
 
 Do not refresh the PR body before promoting: the refresh deletes the checklist `promote` ticks.
 
