@@ -1,6 +1,6 @@
 # Open the MR/PR (nax-finish Step 6)
 
-Reached only for a feature with no workflow PR, after `nax gates run` is green (or a red gate was explicitly waived). Prepare the PR/MR, then either **open a new one** or **promote an existing one** — **only after the user explicitly approves**.
+Reached only for a feature with no workflow PR, after `nax gates run` (a red gate is fixed inside the same approval, or waived by name). Prepare everything below without asking, show it in the one Step 6 approval, then either **open a new one** or **promote an existing one**. Every write here (branch, commit, push, create, body refresh, promote) runs only inside that approval, or under an explicit auto-approve.
 
 > **A PR/MR may already exist.** Someone may have opened one for the branch by hand, or a `pushed` workflow run left the branch for one. So this step is **not** an unconditional create: detect whether a PR/MR already exists for the branch first (7e), then branch — create if none, promote draft→ready if one exists, or report-and-stop if one already exists and is already ready. Never blindly `gh pr create` / `glab mr create`; that would error or open a duplicate.
 
@@ -22,7 +22,7 @@ Verify the CLI is available and authenticated (`gh auth status` / `glab auth sta
 ```bash
 git rev-parse --abbrev-ref HEAD
 ```
-If the current branch **is** the base/default branch, do **not** push to it. Tell the user, propose a branch name derived from the feature (e.g. `feat/<featureName>`), and create it **with approval** before continuing.
+If the current branch **is** the base/default branch, do **not** push to it. Tell the user, put a branch name derived from the feature (e.g. `feat/<featureName>`) in the approval and create it before pushing.
 
 **Reconcile the working tree before pushing — mandatory.** A PR/MR ships only what is committed; any modified-but-unstaged or **untracked** file silently stays out of it, and the PR then omits part of the feature. Uncommitted state arrives from **two** distinct sources, and you must account for both:
 1. **Left behind by the nax run** — nax's auto-commit can miss newly-created files, leaving them untracked before nax-finish even starts.
@@ -32,7 +32,7 @@ So before `git push`, always inspect the **full** working-tree state — never a
 ```bash
 git status --porcelain   # lists BOTH modified (` M`) and untracked (`??`) paths
 ```
-If the output is non-empty, surface every entry (including untracked files — group them so the user sees what is new vs modified) and ask how to handle them: commit them (with an appropriate conventional-commit message; `git add -A` to capture untracked files too), or stop. **Never auto-commit without approval, and never push while `git status --porcelain` is non-empty unless the user explicitly tells you to leave those files out.** Then push the branch:
+If the output is non-empty, list every entry in the approval (group untracked vs modified so the user sees what is new) with the planned conventional-commit message (`git add -A` to capture untracked files too). **Never commit outside the approval, and never push while `git status --porcelain` is non-empty unless the user explicitly tells you to leave those files out.** Then push the branch:
 ```bash
 git push -u origin <branch>
 ```
@@ -43,7 +43,7 @@ so the remote has the commits.
 - GitHub: check `.github/PULL_REQUEST_TEMPLATE.md`, `.github/pull_request_template.md`, `docs/PULL_REQUEST_TEMPLATE.md`, and any file under `.github/PULL_REQUEST_TEMPLATE/`.
 - GitLab: check `.gitlab/merge_request_templates/*.md`.
 
-If a template exists, fill its sections rather than imposing your own structure. If several GitLab templates exist, ask which to use. If none exists, use a clean default: **Summary**, **What changed**, **Test plan**, **Review notes**.
+If a template exists, fill its sections rather than imposing your own structure. If several GitLab templates exist, pick the best fit and name it in the approval. If none exists, use a clean default: **Summary**, **What changed**, **Test plan**, **Review notes**.
 
 ## 7d. Compose the body from the spec
 
@@ -78,11 +78,11 @@ An MR that appears in query 1 but **not** in query 2 is already **ready**. GitLa
 Branch on the result:
 - **No existing PR/MR** → go to **7f (create)**.
 - **Exists and is a draft** → go to **7g (promote draft → ready)**.
-- **Exists and is already ready** (not a draft) → read its live checks first (`gh pr checks <url> --json name,state,bucket` / `glab ci status --branch <branch>`). A red check is not a clean finish: fix it from its log, push, and wait for green, or have the user waive it by name. If the user declines both, **report it as ready with red checks** (name them) and stop; do not call it clean. Otherwise **report and stop.** Print the existing URL and note it's already open and ready — there is nothing to open. Do **not** create a duplicate and do **not** silently rewrite its body. (You may offer to refresh its body per 7g's optional body step if the user asks, but default to leaving it as-is.) This is a clean success — carry the URL into the final summary.
+- **Exists and is already ready** (not a draft) → read its live checks first (`gh pr checks <url> --json name,state,bucket` / `glab ci status --branch <branch>`). A red check is not a clean finish: plan its fix from the log (push, wait for green) in the approval, or the user waives it by name. If the user declines both, **report it as ready with red checks** (name them) and stop; do not call it clean. Otherwise **report and stop.** Print the existing URL and note it's already open and ready — there is nothing to open. Do **not** create a duplicate and do **not** silently rewrite its body. (You may offer to refresh its body per 7g's optional body step if the user asks, but default to leaving it as-is.) This is a clean success — carry the URL into the final summary.
 
 ## 7f. Create a new PR/MR (only when none exists)
 
-Print the full title + body + target branch. Ask the user to approve, edit, or cancel. **Only after explicit approval**, open it:
+Show the full title + body + target branch in the approval; the user may approve, edit, or cancel. On approval, open it:
 ```bash
 # GitHub
 gh pr create --base <base> --head <branch> --title "<title>" --body "<body>"
@@ -96,9 +96,9 @@ Print the resulting URL. If the user edits, revise and re-confirm before opening
 A draft PR/MR is already open — the remaining action is to mark it ready, not to recreate it. (A nax **workflow** draft never comes here: it is readied by `nax bot fix`, Step 5, or by `nax workflow promote`, `legacy-draft.md`.) **Default: leave its title/body untouched.**
 
 1. Show the user the existing PR/MR: its URL, title, current draft state, and that the branch now carries the fixes you just pushed (7b). State that you'll flip it to **ready**.
-2. **Offer** (don't force) a body refresh: you composed a fresh spec body in 7d — offer to update the PR/MR description to it. Only overwrite the existing body **if the user explicitly approves**; otherwise leave it as-is.
-3. **Check CI before promoting.** Read the PR's checks on the head you just pushed (`gh pr checks <branch> --json name,state,bucket` / `glab ci status --branch <branch>`). Wait **at most about 15 minutes** (`gh pr checks <url> --watch --fail-fast`, or one status read every 30-60 s); when the bound passes with checks still pending, report them as pending and ask the user. Never wait in an unbounded loop. Read checks by `bucket`: `pass` and `skipping` are green, `fail` and `cancel` are red, `pending` is pending (`gh pr checks` exits 8 for pending, which is not a failure). "Required" means a check the branch protection requires (`gh pr checks <url> --required`); on GitLab, where there is no such flag, treat every pipeline job not marked `allow_failure` as required. If any required check is red, do not promote: fix it from its log (as in Step 4's red-CI item), push, and check again. Promote over a red check only when the user explicitly waives that check by name.
-4. **Only after explicit approval**, promote it (and, if approved in step 2, update the body first):
+2. **Offer** (don't force) a body refresh in the approval: you composed a fresh spec body in 7d. Only overwrite the existing body **if the user picks it**; auto-approve leaves it as-is.
+3. **Check CI before promoting.** Read the PR's checks on the head you just pushed (`gh pr checks <branch> --json name,state,bucket` / `glab ci status --branch <branch>`). Wait **at most about 15 minutes** (`gh pr checks <url> --watch --fail-fast`, or one status read every 30-60 s); when the bound passes with checks still pending, report them as pending and stop without promoting. Never wait in an unbounded loop. Read checks by `bucket`: `pass` and `skipping` are green, `fail` and `cancel` are red, `pending` is pending (`gh pr checks` exits 8 for pending, which is not a failure). "Required" means a check the branch protection requires (`gh pr checks <url> --required`); on GitLab, where there is no such flag, treat every pipeline job not marked `allow_failure` as required. If any required check is red, do not promote: fix it from its log (as in Step 3's red-CI row), push, and check again, at most once more; if it is still red, report it and stop. Promote over a red check only when the user explicitly waives that check by name.
+4. **Within the approval**, promote it (and, if the refresh was picked in step 2, update the body first):
 ```bash
 # GitHub — optional body refresh, then mark ready
 gh pr edit "<branch>" --title "<title>" --body "<body>"   # only if user approved a refresh
