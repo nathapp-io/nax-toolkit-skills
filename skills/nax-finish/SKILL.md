@@ -73,7 +73,7 @@ Then work every open item into a planned action. Only the evidence decides; do n
 | Item | Planned action |
 |:--|:--|
 | `finding`, or a `story` whose gap is code | **Leave to `nax bot fix`**: it works every open item thread and `fix`'s own re-review records `fixed`. A finding that names a missing test is fixed only when that test exists and passes. |
-| `advisor` / `ruling` | Verify the premise: "already fixed by `<sha>`" -> `git show <sha>`, read `file:line`, run the named or nearest test; "out of scope" -> find the spec or PRD line; `waive` -> confirm the risk is the one described, no larger. Draft `confirm: <evidence>` or `override: <reason>`. `defer` is not a ruling: no later step remains, so plan a fix (leave to bot) or a `waive: <reason>`. |
+| `advisor` / `ruling` | Verify the premise: "already fixed by `<sha>`" -> `git show <sha>`, read `file:line`, run the named or nearest test; "out of scope" -> find the spec or PRD line; `waive` -> confirm the risk is the one described, no larger. Then pick the keyword by what is left to do. **Premise holds and nothing remains to change** (the change is already in place, or the advisor's change, such as an AC or PRD `supersede`, is not needed because the original holds and its story passed) -> draft `verified: <evidence>`; this settles the item. **The advisor's change still has to be made in code** -> draft `confirm: <evidence>`; nax then holds the item as confirmed advisor work, and the PR cannot be readied, until a `nax bot fix` push answers it. Never `confirm` a change bot fix cannot push (a PRD or AC edit): fix returns `no-change` and the item stays open for good. **Premise wrong** -> draft `override: <reason>`. `defer` is not a ruling: no later step remains, so plan a fix (leave to bot) or a `waive: <reason>`. |
 | `cannot-verify` / already-fixed | Run the commands or read the code paths the text names. Checked -> draft `verified: <evidence>`. Not checkable here -> draft `waive: <why it cannot be checked>` and flag it in the plan. |
 | `gate` | Reproduce with `nax gates run --gate <name> --json`, find the cause, plan the hand fix. After it is pushed, the reply is `fixed <sha>` (bot fix may try a code fix, but only a reply or the next publish settles a gate item). |
 | `story` that is out of scope or accepted as is | Draft `waive: <reason>` citing the spec or PRD. |
@@ -81,7 +81,7 @@ Then work every open item into a planned action. Only the evidence decides; do n
 | `CI conflicting` (merge conflicts with the base) | Plan a rebase or merge of the base. Never ready a conflicting PR. |
 | `CI no-checks` (the repo has no CI) | `nax bot fix` can never ready it. Plan: settle every item, then the user waives CI by name and you mark it ready by hand (`gh pr ready <url>` / `glab mr update <iid> --ready`). |
 
-Ruling replies are read by keyword on their first line: `fixed <sha>` (7-40 hex, optional reason after ` — `, ` - ` or `: `), `waive: <reason>`, `confirm[: <reason>]`, `override: <reason>`, `verified[: <reason>]`. A later reply replaces an earlier ruling. Only a collaborator with write access rules; a reply posted with the user's own `gh`/`glab` login counts when that login has write access. Check it here (`gh api repos/{owner}/{repo}/collaborators/<login>/permission --jq .permission` must be `write`, `maintain` or `admin`; GitLab: Developer or higher); if it is lower, nax silently drops the replies, so say so in the plan and hand the drafts to someone who can post them.
+Ruling replies are read by keyword on their first line: `fixed <sha>` (7-40 hex, optional reason after ` — `, ` - ` or `: `), `waive: <reason>`, `confirm[: <reason>]`, `override: <reason>`, `verified[: <reason>]`. Every keyword settles its item except `confirm` on an `advisor` item, which means "make the advisor's change" and stays open until a `nax bot fix` push answers it. A later reply replaces an earlier ruling. Only a collaborator with write access rules; a reply posted with the user's own `gh`/`glab` login counts when that login has write access. Check it here (`gh api repos/{owner}/{repo}/collaborators/<login>/permission --jq .permission` must be `write`, `maintain` or `admin`; GitLab: Developer or higher); if it is lower, nax silently drops the replies, so say so in the plan and hand the drafts to someone who can post them.
 
 To prove a test catches a defect, run it against the pre-fix commit in a throwaway `git worktree`, never with `git stash` in the live tree.
 
@@ -92,7 +92,7 @@ Print the whole picture in one block, then ask (skip the question only on explic
 ```
 PR <url> · draft · head <sha7> · CI <green|red: names|pending>
 Open items (N):
-  D-1  advisor  <issue>            -> post "confirm: read 4f2e1aa store.ts:88; store.test.ts green"
+  D-1  advisor  <issue>            -> post "verified: read 4f2e1aa store.ts:88; store.test.ts green"
   B3   finding  <file:line> <issue> -> nax bot fix
   G-1  gate     lint               -> hand fix (<cause>), push, post "fixed <sha>"
 CI:  check:e2e red (<root cause>)  -> hand fix, push
@@ -113,10 +113,10 @@ In this order, without further questions:
    # GitHub: item threads are review comments; reply to the opener
    gh api "repos/{owner}/{repo}/pulls/<n>/comments" --paginate \
      --jq '.[] | select(.in_reply_to_id == null and (.body | contains("Open item **<id>**"))) | .id'
-   gh api -X POST "repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies" -f body='confirm: <evidence>'
+   gh api -X POST "repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies" -f body='verified: <evidence>'
    # GitLab: find the discussion whose first note is the opener, then add a note
    glab api "projects/:id/merge_requests/<iid>/discussions?per_page=100"
-   glab api -X POST "projects/:id/merge_requests/<iid>/discussions/<discussion-id>/notes" -f body='confirm: <evidence>'
+   glab api -X POST "projects/:id/merge_requests/<iid>/discussions/<discussion-id>/notes" -f body='verified: <evidence>'
    ```
    A republish can leave older, closed openers for the same id. Reply only on the opener whose `<!-- nax-bot:v1 key=w-<id>.<hash> -->` key is listed in the item index and whose thread is unresolved, and post exactly one reply per item. On GitHub Enterprise or self-hosted GitLab, pass `--hostname <host>` to `gh api` / `glab api`.
 3. **Review once:** `nax bot review <n> [--profile …] [--model …]`. It records the rulings (echoing `Recorded: …` on each thread), re-checks earlier findings and answers threads. It is required before fix: fix refuses when the head has no review.
@@ -127,6 +127,7 @@ Read the output:
 - `nax bot fix: PR #<n> — pushed <sha>` or `nothing to fix`, then, after a push, the chained `nax bot review: …` line and `nax bot fix: ready pass — Marked ready.` / `Kept as draft: <reason>`. After `nothing to fix`, read the readiness from the nax bot summary comment on the PR (one comment, edited in place).
 - `Kept as draft: CI pending: …` -> the ready pass already waited for CI. Run `nax bot fix <n>` one more time (same approval) only when that output said `nothing to fix`, or its chained review line said `0 findings posted`; then it is a pure readiness check. Otherwise report the pending CI and stop. This is the only second `fix` the skill ever runs.
 - `Kept as draft: <n> open item(s): <ids>` -> those items still need a ruling the evidence could not supply, or fix could not close them: report each with what is missing and stop. Do not loop review/fix.
+- `<n> confirmed advisor item(s) awaiting a fix: <ids>`, or fix exits `no-change` while the summary still counts confirmed advisor items open -> a `confirm` was posted on a change bot fix cannot make. Report it and ask before replacing the reply with `verified: <evidence>` (or `waive: <reason>`) and running `nax bot review <n>` once more to record it; fix did not push, so that review is not a repeat of fix's own.
 - `PR head did not reach … within 60 s; run nax bot review <n>` or `cost limit reached; …` -> run the one command it names (same approval), once.
 - After `pushed <sha>`, a chained review that did not post (its reason on stderr, no ready-pass line) -> report it and stop; run `nax bot review <n>` by hand only when the output names that command.
 - `CI failed: …` -> a new red CI cause: report it and ask (Step 3's red-CI row).
@@ -169,6 +170,7 @@ Name any waived gate, check or item explicitly; never imply a clean pass.
 | Re-running a full review or acceptance on a workflow PR | The run reviewed the branch; `nax bot review` covers what came after |
 | Writing rulings into `decisions-*.json`, ticking the checklist or marking a workflow PR ready by hand | Rulings are thread replies; `nax bot fix` readies the PR (legacy drafts: `nax workflow record` / `promote`; no-CI repos: by hand only after the user waives CI by name) |
 | Confirming an advisor decision on its own rationale | Verify the premise (commit, code, test) and put the evidence in the reply |
+| Replying `confirm` to an advisor item whose premise you verified | `confirm` asks bot fix to make the change and holds the item until a push; use `verified: <evidence>` when nothing is left to change |
 | Treating the status JSON's `ci` as live | Read the live checks on the current head |
 | Expecting `nax bot fix` to repair CI | Fix CI from the log as part of the plan |
 | Pushing with a dirty tree or to the base branch | `git status --porcelain` first; branch off the base (`references/open-pr-mr.md` 7b) |
