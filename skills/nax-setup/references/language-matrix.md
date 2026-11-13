@@ -28,8 +28,6 @@ Fill `quality.commands.*` and `review.commands.*` from the row for the detected 
 | `build` | `<pm> run build` | `<pm> run build` *(if present)* | — *(usually none)* | `go build ./...` | `cargo build` |
 | `typecheck` | `tsc --noEmit -p tsconfig.json` | — *(usually none)* | `mypy <pkg-dir>` *(only if mypy configured; `mypy src` for src-layout, `mypy <package>` for flat-layout — point at the real source dir)* | — *(compiler typechecks; use `build`)* | — *(compiler typechecks; use `build`/`cargo check`)* |
 | `lint` | `<pm> run lint` (eslint/biome) | `<pm> run lint` | `ruff check` (or `<run> ruff check`) | `golangci-lint run` *(folds in `go vet`)* | `cargo clippy` |
-| `lintFix` | `<pm> run lint:fix` | `<pm> run lint:fix` | `ruff check --fix` | `golangci-lint run --fix` | `cargo clippy --fix --allow-dirty --allow-staged` |
-| `formatFix` | `<pm> run format` / `lint:fix` | same | `ruff format` | `gofmt -w .` (or `goimports -w .`) | `cargo fmt` |
 
 ### `testScoped` — per-language scoped-run idiom
 
@@ -61,7 +59,7 @@ Whether to set `quality.commands.typecheck` at all:
 | Go | No | The compiler typechecks; express it as the `build` review check, not `typecheck`. |
 | Rust | No | Same — `cargo build`/`cargo check` is the typecheck. |
 
-For `go vet` / `cargo clippy`-style static analysis: there is **no `vet` gate** in nax's vocabulary (`test, typecheck, lint, build` only). Fold it into `lint` — `golangci-lint run` already runs vet-class analyzers; if you want raw vet too, use `lint: "go vet ./... && golangci-lint run"`.
+For `go vet` / `cargo clippy`-style static analysis: there is **no `vet` gate** in nax's vocabulary (`test, typecheck, lint, build` only). Fold it into `lint` — `golangci-lint run` already runs vet-class analyzers; if you want raw vet too, use the list form `lint: ["go vet ./...", "golangci-lint run"]` (nax warns on `&&` chains in `quality.commands`).
 
 ### `review.checks` must match the commands you actually set
 
@@ -82,23 +80,24 @@ For `go vet` / `cargo clippy`-style static analysis: there is **no `vet` gate** 
 
 ## Output-format knobs (easy to miss, matters for non-JS)
 
-nax parses lint/typecheck output. The format knobs default to `"auto"`, which assumes JS tools (ESLint/Biome/tsc JSON). **For non-JS toolchains, set them to `"text"` so nax does not try to parse golangci/clippy/ruff/mypy output as ESLint or tsc JSON:**
+nax parses lint output. The format knob defaults to `"auto"`, which assumes JS tools (ESLint/Biome JSON). **For non-JS toolchains, set it to `"text"` so nax does not try to parse golangci/clippy/ruff output as ESLint JSON:**
 
 ```jsonc
 "quality": {
-  "lintOutput":      { "format": "text" },   // non-JS: text. JS: "auto" (or "eslint-json"/"biome-json")
-  "typecheckOutput": { "format": "text" }     // non-TS: text. TS: "auto" (or "tsc")
+  "lintOutput": { "format": "text" }   // non-JS: text. JS: "auto" (or "eslint-json"/"biome-json")
 }
 ```
 
-| Language | `lintOutput.format` | `typecheckOutput.format` |
-|:--|:--|:--|
-| TypeScript | `auto` (eslint-json / biome-json) | `auto` (tsc) |
-| JavaScript | `auto` | `none` |
-| Python | `text` | `text` |
-| Go | `text` | `none` |
-| Rust | `text` | `none` |
+| Language | `lintOutput.format` |
+|:--|:--|
+| TypeScript | `auto` (eslint-json / biome-json) |
+| JavaScript | `auto` |
+| Python | `text` |
+| Go | `text` |
+| Rust | `text` |
+
+> Do not write `quality.typecheckOutput`, `quality.commands.lintFix`/`formatFix` or `review.commands.lintFix`/`formatFix`: nax removed them with pipeline mode and strips them at load with a warning.
 
 ## "Full parity" — language-specific meaning
 
-The "add missing scripts for full parity" step is a **JS-only** concept (you add `type-check` / `lint:fix` scripts to `package.json`). For Go/Rust/Python there are **no scripts to add** — the toolchain commands already exist; you simply wire nax to them (or to `make` targets if the repo standardizes on a Makefile). If a non-JS repo has *no* linter/typechecker configured at all, that is a real gap: either turn the gate off (leave `quality.commands.lint` / `quality.commands.typecheck` unset) or, with the user's agreement, add the tool (e.g. introduce `ruff`/`golangci-lint`). Never wire a gate to a command that does not resolve.
+The "add missing scripts for full parity" step is a **JS-only** concept (you add a `type-check` script to `package.json`). For Go/Rust/Python there are **no scripts to add** — the toolchain commands already exist; you simply wire nax to them (or to `make` targets if the repo standardizes on a Makefile). If a non-JS repo has *no* linter/typechecker configured at all, that is a real gap: either turn the gate off (leave `quality.commands.lint` / `quality.commands.typecheck` unset) or, with the user's agreement, add the tool (e.g. introduce `ruff`/`golangci-lint`). Never wire a gate to a command that does not resolve.

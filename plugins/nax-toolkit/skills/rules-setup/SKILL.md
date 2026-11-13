@@ -1,6 +1,6 @@
 ---
 name: rules-setup
-description: Guide for writing good .nax/rules/*.md files — the agent-neutral canonical store that replaces per-agent files like CLAUDE.md, AGENTS.md, and .cursorrules. Covers frontmatter (priority, paths, appliesTo, description, stages), how workflow mode delivers rules (a rules index plus on-demand bodies), content quality, neutrality requirements, single-package and monorepo layouts, and validation with nax rules lint. Includes a pointer to the curator (references/curator.md) for ongoing rule discovery from run artifacts. Ends with lint pass and a commit.
+description: Guide for writing good .nax/rules/*.md files — the agent-neutral canonical store that replaces per-agent files like CLAUDE.md, AGENTS.md, and .cursorrules. Covers frontmatter (priority, paths, appliesTo, description), how workflow mode delivers rules (a rules index plus on-demand bodies), content quality, neutrality requirements, single-package and monorepo layouts, and validation with nax rules lint. Ends with lint pass and a commit.
 ---
 
 # rules-setup
@@ -15,12 +15,12 @@ Author or improve `.nax/rules/*.md` files so agents receive precise, budget-effi
 
 `.nax/rules/*.md` files are the **canonical store** for project conventions. They replace per-agent rule files as the single source of truth: `nax rules export` generates `.claude/rules/*.md` for Claude and a single shim file (`AGENTS.md`, `GEMINI.md`, `.cursorrules`) for the other agents. Those outputs are read-only. (`CLAUDE.md` is a different thing: the context file `nax generate` builds from `.nax/context.md`.)
 
-How a rule reaches an agent depends on the run mode:
+How a rule reaches an agent depends on `context.rules.delivery` (nax runs in workflow mode only; pipeline mode was removed):
 
-| Mode | Delivery |
+| Setting | Delivery |
 |:-----|:---------|
-| **Workflow mode, `context.rules.delivery: "index"`** (the default on nax releases after 0.90.2) | The story brief carries a `## Rules index`: one line per rule with its id, file, `description` and `appliesTo` scope. A native session in one of the workflow roles (`wf-implementer`, `wf-branch-fix`, `wf-story-review`, `wf-rereview`, `wf-branch-review`) gets a rule's full text the first time it reads a file the rule applies to (reading the rule's own file also counts as seeing it); a writing session (`wf-implementer`, `wf-branch-fix`) that writes or edits such a file before seeing the rule is refused once with the rule text, then retries. Review packages list each rule with the changed files it governs. ACP agents get the index and those review lists only. |
-| **Pipeline mode, or `delivery: "push"`** | The context engine pushes the matching rule bodies into the prompt's project context, cut to the rules budget by `priority`. |
+| **`delivery: "index"`** (the default on nax releases after 0.90.2) | The story brief carries a `## Rules index`: one line per rule with its id, file, `description` and `appliesTo` scope. A native session in one of the workflow roles (`wf-implementer`, `wf-branch-fix`, `wf-story-review`, `wf-rereview`, `wf-branch-review`) gets a rule's full text the first time it reads a file the rule applies to (reading the rule's own file also counts as seeing it); a writing session (`wf-implementer`, `wf-branch-fix`) that writes or edits such a file before seeing the rule is refused once with the rule text, then retries. Review packages list each rule with the changed files it governs. ACP agents get the index and those review lists only. |
+| **`delivery: "push"`** | The context engine pushes the matching rule bodies into the prompt's project context, cut to the rules budget by `priority`. |
 
 Either way, token cost is real: a pushed rule is in every matching prompt, and a delivered rule body stays in the session once shown. In index mode the `description` is all an agent sees up front, so it decides whether the agent opens the rule at all.
 
@@ -80,7 +80,7 @@ Every rule file is a Markdown file with an optional YAML frontmatter block. Fron
 | `paths` | string or string[] | *(none — loads for all packages)* | Glob patterns matched against the story's package dir relative to the repo root. Use in monorepos to scope a rule to one or more packages. Omit in single-package repos (lint warns `INERT_PATHS` there). |
 | `appliesTo` | string[] | *(none — applies to every file)* | Glob patterns for the files the rule governs. **Index mode:** matched against the single file being read, written or edited; a rule with no `appliesTo` governs every file in its package (its `paths:` scope). **Push mode:** matched against the story's scope files (PRD `contextFiles` and `expectedFiles` plus the git diff); when that set is empty the rule loads anyway — conservative fallback. Must be a list. |
 | `description` | string | *(none — the index falls back to the first Markdown heading, then the rule id)* | One line naming the decisions the rule governs, shown on the rule's index line. Single line only. **No trailing period** — nax appends `. Applies to: ...` after it. |
-| `stages` | string[] | *(none — all stages)* | Pipeline stage names (`single-session`, `tdd-test-writer`, `review-semantic`, ...). Honoured in pipeline mode. Ignored by the workflow-mode index and delivery hook. Under workflow `delivery: "push"` it is matched against the stage name `context`, so a rule scoped to strategy stage names is dropped there. Omit unless the repo still runs pipeline mode. |
+| `stages` | string[] | *(none)* | Legacy key from the removed pipeline mode, still accepted so older rule files load. nax ignores it in every delivery mode (rules apply to every session), and `nax rules lint` warns `"stages" is ignored`. Remove it. |
 
 Any other key rejects the file (`RULES_FRONTMATTER_INVALID`). At run time an invalid file is skipped with a warning, not fatal; `nax rules lint` fails on it.
 
@@ -410,10 +410,10 @@ git commit -m "docs(rules): update nax canonical rules"
 | Writing `the Grep tool`, `the Edit tool` | Write "grep" or "edit the file" |
 | Using `IMPORTANT:` prefix | Rephrase as a plain statement |
 | Emoji in body text | Remove or use `[OK]`/`[WARN]` text markers instead |
-| `appliesTo: ["**/*.spec.ts"]` for a testing rule, in a repo still on pipeline mode or `delivery: "push"` | There `appliesTo:` matches the story's scope files, and spec files the story creates may not be among them yet, so stages that do not write tests would not load the rule (test-writing stages still admit a test-file glob). Also list the source files under test. In workflow index mode, a test-file glob is right: the rule is delivered when the session writes the spec file. |
+| `appliesTo: ["**/*.spec.ts"]` for a testing rule, under `delivery: "push"` | There `appliesTo:` matches the story's scope files, and spec files the story creates may not be among them yet, so the rule may not load. Also list the source files under test. In workflow index mode, a test-file glob is right: the rule is delivered when the session writes the spec file. |
 | No `description:` | The index line shows only the first heading (or the rule id), which rarely tells an agent whether to open the rule. Add a one-line description. |
 | `description:` ending in `.` | The index line renders `... throw.. Applies to:`. Drop the trailing period. |
-| Relying on `stages:` in workflow mode | `stages:` is ignored by the workflow index and delivery hook, and under workflow `delivery: "push"` a strategy-stage list drops the rule. Scope with `paths:` and `appliesTo:` instead. |
+| Relying on `stages:` | `stages:` is ignored in every delivery mode, so it scopes nothing. Scope with `paths:` and `appliesTo:` instead. |
 | One rule body over 16 KiB | It is listed in delivery but never shown. Split it by concern. |
 | Repeating content from `.nax/context.md` | Rules are conventions; context is architecture. Do not duplicate. |
 | Editing `.claude/rules/*.md` or another exported file directly | Edit `.nax/rules/` instead, then re-run `nax rules export --agent=<id>`. (`CLAUDE.md` comes from `.nax/context.md` via `nax generate`, not from rules.) |
@@ -427,15 +427,3 @@ git commit -m "docs(rules): update nax canonical rules"
 ## Run-level rule overrides
 
 A run can bring rules from outside the repo without editing `.nax/rules/`: `nax run --rules-dir <dir>` (or `context.rules.overrideDir`, absolute or `~/`-prefixed in config). The directory uses the same layout, frontmatter and neutrality lint. Its rules are layered after the repo and package rules and replace any rule with the same id; `context.rules.overrideMode: "replace"` uses only the override directory. A missing directory fails the run at start (`RULES_OVERRIDE_DIR_NOT_FOUND`). Use it for org-wide or fleet rules shared across repos; keep repo-specific conventions in `.nax/rules/`.
-
----
-
-## Ongoing rule discovery: the curator
-
-`rules-setup` covers deliberate authoring. For ongoing discovery — finding patterns that emerge from real runs — use the **curator**.
-
-The curator is a built-in post-run plugin that runs automatically after every nax run. It mines run artifacts with 6 deterministic heuristics and writes proposals to `<runDir>/curator-proposals.md`; each proposal names `.nax/rules/curator-suggestions.md` as its target. The highest-value signal (H1 — repeated review findings) requires `review.audit.enabled: true` in `.nax/config.json`.
-
-**Always present proposals to the user and wait for explicit approval before applying anything.** Never auto-apply curator output.
-
-See `references/curator.md` for the full heuristics table, CLI commands, the user-approval presentation format, and threshold tuning.

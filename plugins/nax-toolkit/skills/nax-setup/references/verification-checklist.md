@@ -18,7 +18,7 @@ Each nax command must map to a task the workspace recognizes. **JS/TS orchestrat
 ```bash
 # Turborepo
 npx turbo type-check --dry-run=text | grep -i 'Running type-check'
-npx turbo lint:fix   --dry-run=text | grep -i 'in scope'
+npx turbo lint       --dry-run=text | grep -i 'in scope'
 # Nx
 nx run-many -t type-check --dry-run
 ```
@@ -60,7 +60,8 @@ No command may reference a script/binary/target that does not exist. **Also conf
 - Commands match the detected language: no `<pm> run …` in a Go/Rust repo; no `go test` in a JS repo.
 - JS/TS: no `bunx`/`bun run` in an npm/pnpm/yarn repo (and vice versa).
 - Python: tools that need the managed env carry the `uv run`/`poetry run` prefix.
-- Non-JS: `lintOutput.format`/`typecheckOutput.format` are `"text"`/`"none"`, not `"auto"`.
+- Non-JS: `lintOutput.format` is `"text"` (or `"none"`), not `"auto"`.
+- No removed keys: `nax config -d <repo>` prints no `has been removed` warning (`acceptance`, `quality.typecheckOutput`, `lintFix`/`formatFix` and the other pipeline-only keys). `nax config` reads only the root config, so for a monorepo also run `grep -rnE '"(acceptance|typecheckOutput|lintFix|formatFix)"' .nax/mono` and expect no match.
 - [mono] Scoped flag passthrough works (JS): `<pm> run test -- --filter=...` actually forwards `--filter` (verify with `--dry-run`).
 
 ## 6. Shape sanity (always)

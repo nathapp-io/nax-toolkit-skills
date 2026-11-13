@@ -31,7 +31,7 @@ Per package (or once for a single-package repo), detect the language from its ma
 - `go.mod` → **Go** · `Cargo.toml` → **Rust** · `pyproject.toml`/`requirements.txt` → **Python** · `tsconfig.json` or `typescript` dep → **TypeScript** · else `package.json` → **JavaScript**.
 - A monorepo may mix languages across packages — detect each independently.
 
-Then resolve the command *form* for that language. **Do not reach for a package manager unless the language is JS/TS.** See `references/language-matrix.md` (the SSOT) — it maps each language to its `test` / `build` / `typecheck` / `lint` / `lintFix` / `formatFix` commands, its `testFilePatterns`, and its gate on/off flags.
+Then resolve the command *form* for that language. **Do not reach for a package manager unless the language is JS/TS.** See `references/language-matrix.md` (the SSOT) — it maps each language to its `test` / `build` / `typecheck` / `lint` commands, its `testFilePatterns`, and its gate on/off flags.
 
 - **JS/TS only** — detect the **package manager** from the lockfile (`bun.lock*`→bun, `package-lock.json`→npm, `pnpm-lock.yaml`→pnpm, `yarn.lock`→yarn) and the **orchestrator** (monorepo only: `turbo.json`/`nx.json`/none). Commands are `<pm> run <script>`.
 - **Python** — invoke tools directly (`pytest`, `mypy src`, `ruff check`); **prefer the env-manager prefix** `uv run` / `poetry run` when `uv.lock` / `poetry.lock` is present.
@@ -48,7 +48,7 @@ nax's mechanical checks are **test, typecheck, lint** (quality gates) and **buil
 
 Per the language matrix, some checks **do not exist** for a language (`typecheck` for Go/Rust; `build` for a source-run Python lib) — **turn those off rather than inventing a command**, by omitting the command (leave `quality.commands.typecheck` unset) and dropping `build` from `review.checks`. Then pick a strategy and tell the user:
 
-- **Full parity (JS/TS)** — add the missing scripts, then point nax at them: `type-check` → `tsc --noEmit -p tsconfig.json`; `lint:fix` → existing lint + `--fix`. Monorepo: also add the matching orchestrator task + root passthrough script. (Go/Rust/Python: there are no scripts to add — the toolchain commands already exist.)
+- **Full parity (JS/TS)** — add the missing scripts, then point nax at them: `type-check` → `tsc --noEmit -p tsconfig.json`. Monorepo: also add the matching orchestrator task + root passthrough script. (Go/Rust/Python: there are no scripts to add — the toolchain commands already exist.)
 - **Config-only (non-invasive)** — use only commands that already exist; turn off gates whose command is missing (leave `quality.commands.typecheck` unset, drop `build` from `review.checks`, etc.).
 
 ### 4. Choose the command form by shape × language
@@ -59,11 +59,11 @@ Per the language matrix, some checks **do not exist** for a language (`typecheck
 
 ### 5. Write `.nax/config.json` (always)
 
-Covers `name`, `quality` (`commands` + `lintOutput.format`/`typecheckOutput.format`), `review`, `context`, `plan`, `acceptance`, `precheck.storySizeGate`, `execution.smartTestRunner.testFilePatterns`. **Set the language-specific fields from `references/language-matrix.md`:** the gate commands (including which to leave unset), `testFilePatterns`, and the output-format knobs (`"text"` for non-JS lint/typecheck so nax doesn't try to parse them as ESLint/tsc JSON). Omit `models` to inherit from global `~/.nax/config.json`. Templates in `references/config-template.md` (single-repo and monorepo shapes, with per-language command sets).
+Covers `name`, `quality` (`commands` + `lintOutput.format`), `review`, `context`, `plan`, `precheck.storySizeGate`, `execution.smartTestRunner.testFilePatterns`. **Set the language-specific fields from `references/language-matrix.md`:** the gate commands (including which to leave unset), `testFilePatterns`, and the output-format knobs (`"text"` for non-JS lint so nax doesn't try to parse it as ESLint JSON). Omit `models` to inherit from global `~/.nax/config.json`. Templates in `references/config-template.md` (single-repo and monorepo shapes, with per-language command sets).
 
 ### 6. Write per-package overrides — MONOREPO ONLY
 
-For each member package, create `.nax/mono/<relative-pkg-path>/config.json`. **Detect that package's own language** and override `quality.commands`, `testFilePatterns`, output-format knobs, and the `acceptance` framework + command accordingly — a polyglot monorepo has different command sets per package. Use `{{files}}`/`{{FILE}}` tokens. Template: `references/mono-config-template.md`. **Skip this step entirely for single-package repos.**
+For each member package, create `.nax/mono/<relative-pkg-path>/config.json`. **Detect that package's own language** and override `quality.commands`, `testFilePatterns` and the lint output format accordingly — a polyglot monorepo has different command sets per package. Use the `{{files}}` token in `testScoped`. Template: `references/mono-config-template.md`. **Skip this step entirely for single-package repos.**
 
 ### 7. constitution.md and context.md (always)
 
@@ -87,7 +87,7 @@ Run `references/verification-checklist.md`. At minimum: validate every JSON file
 - **Writing `quality.require*`** — `requireTypecheck`/`requireLint`/`requireTests` are **removed** and rejected at parse time; a config carrying one makes every `nax` command fail. Omit the gate's command instead.
 - **Phantom gates** — a `quality.commands.typecheck` in a Go/Rust repo, or a `typecheck`/`build` entry in `review.checks` with no matching command. Leave the command unset per the language matrix.
 - **Wrong `testFilePatterns`** — the schema default `test/**/*.test.ts` is TS-shaped; a pytest repo needs `**/test_*.py`, Go needs `**/*_test.go`. Read the framework's real convention.
-- **Output-format mismatch** — leaving `lintOutput.format`/`typecheckOutput.format` on `"auto"` for Go/Rust/Python makes nax try to parse golangci/clippy/ruff/mypy output as ESLint/tsc JSON. Set `"text"`.
+- **Output-format mismatch** — leaving `lintOutput.format` on `"auto"` for Go/Rust/Python makes nax try to parse golangci/clippy/ruff output as ESLint JSON. Set `"text"`.
 - **Missing env-manager prefix** — bare `pytest` in a `uv`/`poetry` repo can fail "command not found"; use `uv run pytest`.
 - **Setting `test` to `build`** (tests never run); copying a bun config into an npm repo (`bunx`→fails).
 - **Blanket-ignoring `.nax/` in `.gitignore`** — that untracks `config.json` and specs you want committed. Ignore only the generated artifacts (`references/ignore-files.md`), not the whole tree.
