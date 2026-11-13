@@ -1,6 +1,6 @@
 # `.nax/config.json` templates
 
-**Resolve every command from the detected language** — see `references/language-matrix.md` (the SSOT for per-language `test`/`build`/`typecheck`/`lint`/`lintFix`/`formatFix`, `testFilePatterns`, gate flags, and output-format knobs). These templates show how to *assemble* what you find there. Omit `"models"` to inherit tiers from global `~/.nax/config.json`.
+**Resolve every command from the detected language** — see `references/language-matrix.md` (the SSOT for per-language `test`/`build`/`typecheck`/`lint`, `testFilePatterns`, gate flags, and output-format knobs). These templates show how to *assemble* what you find there. Omit `"models"` to inherit tiers from global `~/.nax/config.json`.
 
 Notation: `<pm>` = JS package-manager run prefix (`bun run`/`npm run`/`pnpm run`/`yarn`), used **only when the language is JS/TS**. For Python/Go/Rust the commands are toolchain-direct (no `<pm>`).
 
@@ -8,7 +8,7 @@ Notation: `<pm>` = JS package-manager run prefix (`bun run`/`npm run`/`pnpm run`
 
 ## A. Single-package repo (no orchestrator, no mono configs)
 
-Commands call the language's toolchain/scripts directly. This is the whole setup — there is no `.nax/mono/`. The skeleton below is language-neutral; **fill `quality.commands` (and leave unset the gates the language has none for), the `*Output.format` knobs, `review.checks`/`commands`, and `testFilePatterns` from the language matrix.**
+Commands call the language's toolchain/scripts directly. This is the whole setup — there is no `.nax/mono/`. The skeleton below is language-neutral; **fill `quality.commands` (and leave unset the gates the language has none for), the `lintOutput.format` knob, `review.checks`/`commands`, and `testFilePatterns` from the language matrix.**
 
 > Never write `quality.requireTypecheck` / `requireLint` / `requireTests` — they were removed from nax and are rejected at parse time. A gate is disabled by having no command.
 
@@ -22,12 +22,9 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
       "test": "<from matrix>",
       "testScoped": "<from matrix, or same as test for single repo>",
       "typecheck": "<from matrix, or omit if language has none>",
-      "lint": "<from matrix>",
-      "lintFix": "<from matrix>",
-      "formatFix": "<from matrix>"
+      "lint": "<from matrix>"
     },
-    "lintOutput": { "format": "auto" },        // matrix: "text" for Go/Rust/Python
-    "typecheckOutput": { "format": "auto" }    // matrix: "text"/"none" for non-TS
+    "lintOutput": { "format": "auto" }         // matrix: "text" for Go/Rust/Python
   },
   "review": {
     "enabled": true,
@@ -35,8 +32,7 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
     "commands": {
       "build": "<from matrix, or omit if none>",
       "typecheck": "<from matrix, or omit if none>",
-      "lint": "<from matrix>",
-      "lintFix": "<from matrix>"
+      "lint": "<from matrix>"
     }
   },
   "context": {
@@ -45,7 +41,6 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
     "v2": { "enabled": true, "minScore": 0.1, "rules": { "allowLegacyClaudeMd": false } }
   },
   "plan": { "model": "balanced", "mode": "refine", "specGuard": true },
-  "acceptance": { "enabled": true, "maxRetries": 3 },
   "precheck": { "storySizeGate": { "enabled": true, "maxAcCount": 15, "maxBulletPoints": 15 } },
   "execution": { "smartTestRunner": { "testFilePatterns": ["<from matrix>"] } }
 }
@@ -58,13 +53,12 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
 "quality": {
   "commands": {
     "test": "npm run test", "testScoped": "npm run test",
-    "typecheck": "npm run type-check", "lint": "npm run lint",
-    "lintFix": "npm run lint:fix", "formatFix": "npm run lint:fix"
+    "typecheck": "npm run type-check", "lint": "npm run lint"
   },
-  "lintOutput": { "format": "auto" }, "typecheckOutput": { "format": "auto" }
+  "lintOutput": { "format": "auto" }
 },
 "review": { "enabled": true, "checks": ["build","typecheck","lint","semantic","adversarial"],
-  "commands": { "build": "npm run build", "typecheck": "npm run type-check", "lint": "npm run lint", "lintFix": "npm run lint:fix" } },
+  "commands": { "build": "npm run build", "typecheck": "npm run type-check", "lint": "npm run lint" } },
 "execution": { "smartTestRunner": { "testFilePatterns": ["**/*.spec.ts"] } }
 ```
 
@@ -73,12 +67,12 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
 "quality": {
   "commands": {
     "test": "go test ./...", "testScoped": "go test ./...",
-    "lint": "golangci-lint run", "lintFix": "golangci-lint run --fix", "formatFix": "gofmt -w ."
+    "lint": "golangci-lint run"
   },
-  "lintOutput": { "format": "text" }, "typecheckOutput": { "format": "none" }
+  "lintOutput": { "format": "text" }
 },
 "review": { "enabled": true, "checks": ["build","lint","semantic","adversarial"],
-  "commands": { "build": "go build ./...", "lint": "golangci-lint run", "lintFix": "golangci-lint run --fix" } },
+  "commands": { "build": "go build ./...", "lint": "golangci-lint run" } },
 "execution": { "smartTestRunner": { "testFilePatterns": ["**/*_test.go"] } }
 ```
 
@@ -87,13 +81,12 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
 "quality": {
   "commands": {
     "test": "uv run pytest", "testScoped": "uv run pytest {{files}}",
-    "typecheck": "uv run mypy src", "lint": "uv run ruff check",
-    "lintFix": "uv run ruff check --fix", "formatFix": "uv run ruff format"
+    "typecheck": "uv run mypy src", "lint": "uv run ruff check"
   },
-  "lintOutput": { "format": "text" }, "typecheckOutput": { "format": "text" }
+  "lintOutput": { "format": "text" }
 },
 "review": { "enabled": true, "checks": ["typecheck","lint","semantic","adversarial"],
-  "commands": { "typecheck": "uv run mypy src", "lint": "uv run ruff check", "lintFix": "uv run ruff check --fix" } },
+  "commands": { "typecheck": "uv run mypy src", "lint": "uv run ruff check" } },
 "execution": { "smartTestRunner": { "testFilePatterns": ["**/test_*.py","**/*_test.py"] } }
 ```
 
@@ -102,9 +95,9 @@ Commands call the language's toolchain/scripts directly. This is the whole setup
 "quality": {
   "commands": {
     "test": "cargo test", "testScoped": "cargo test",
-    "lint": "cargo clippy", "lintFix": "cargo clippy --fix --allow-dirty --allow-staged", "formatFix": "cargo fmt"
+    "lint": "cargo clippy"
   },
-  "lintOutput": { "format": "text" }, "typecheckOutput": { "format": "none" }
+  "lintOutput": { "format": "text" }
 },
 "review": { "enabled": true, "checks": ["build","lint","semantic","adversarial"],
   "commands": { "build": "cargo build", "lint": "cargo clippy" } },
@@ -126,12 +119,9 @@ Root commands drive the workspace. **JS/TS:** prefer root passthrough scripts ov
       "test": "<pm> run test",                          // JS/turbo; or "go test ./..." / "cargo test --workspace"
       "testScoped": "<pm> run test -- --filter=[HEAD^1]",   // turbo; nx uses the affected form
       "typecheck": "<pm> run type-check",               // omit if no package has a typecheck gate
-      "lint": "<pm> run lint",
-      "lintFix": "<pm> run lint:fix",
-      "formatFix": "<pm> run lint:fix"
+      "lint": "<pm> run lint"
     },
-    "lintOutput": { "format": "auto" },
-    "typecheckOutput": { "format": "auto" }
+    "lintOutput": { "format": "auto" }
   },
   "review": {
     "enabled": true,
@@ -139,8 +129,7 @@ Root commands drive the workspace. **JS/TS:** prefer root passthrough scripts ov
     "commands": {
       "build": "<pm> run build",
       "typecheck": "<pm> run type-check",
-      "lint": "<pm> run lint",
-      "lintFix": "<pm> run lint:fix"
+      "lint": "<pm> run lint"
     }
   },
   "context": {
@@ -149,7 +138,6 @@ Root commands drive the workspace. **JS/TS:** prefer root passthrough scripts ov
     "v2": { "enabled": true, "minScore": 0.1, "rules": { "allowLegacyClaudeMd": false } }
   },
   "plan": { "model": "balanced", "mode": "refine", "specGuard": true },
-  "acceptance": { "enabled": true, "maxRetries": 3 },
   "precheck": { "storySizeGate": { "enabled": true, "maxAcCount": 15, "maxBulletPoints": 15 } },
   "execution": { "smartTestRunner": { "testFilePatterns": ["<from matrix>"] } }
 }
@@ -159,7 +147,7 @@ Root commands drive the workspace. **JS/TS:** prefer root passthrough scripts ov
 
 ## Config-only shape (non-invasive, either layout)
 
-When you must NOT add scripts. Wire only commands that already exist; turn off gates whose command is missing. Example (JS where `build` already runs `tsc`, so no separate typecheck; no `--fix` script):
+When you must NOT add scripts. Wire only commands that already exist; turn off gates whose command is missing. Example (JS where `build` already runs `tsc`, so no separate typecheck):
 
 ```jsonc
 {
@@ -185,18 +173,15 @@ Go/Rust/Python have **no scripts to add** — their toolchain commands already e
 
 Single repo — root `package.json`; Monorepo — every member `package.json`:
 ```jsonc
-"type-check": "tsc --noEmit -p tsconfig.json",
-"lint:fix": "<linter> --fix"   // e.g. "eslint -c .eslintrc.js --fix"
+"type-check": "tsc --noEmit -p tsconfig.json"
 ```
 
 Monorepo ONLY — `turbo.json` tasks + root passthrough scripts:
 ```jsonc
 // turbo.json tasks
-"lint:fix":   { "cache": false, "outputs": [] },
 "type-check": { "dependsOn": ["^build"], "outputs": [] },
 "test:cov":   { "dependsOn": ["^build"], "outputs": ["coverage/**"] }
 // root package.json
 "type-check": "turbo type-check",
-"lint:fix":   "turbo lint:fix",
 "test:cov":   "turbo test:cov"
 ```

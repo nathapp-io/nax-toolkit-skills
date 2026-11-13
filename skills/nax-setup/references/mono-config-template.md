@@ -18,18 +18,11 @@ Commands here run **from the package directory**, so they invoke the package's o
       "test": "<pm> run test",
       "testScoped": "<pm-dlx> jest --config ./test/jest-test.json {{files}} --passWithNoTests",
       "typecheck": "<pm> run type-check",
-      "lint": "<pm> run lint",
-      "lintFix": "<pm> run lint:fix",
-      "formatFix": "<pm> run lint:fix"
+      "lint": "<pm> run lint"
     },
-    "lintOutput": { "format": "auto" },
-    "typecheckOutput": { "format": "auto" }
+    "lintOutput": { "format": "auto" }
   },
-  "execution": { "smartTestRunner": { "testFilePatterns": ["**/*.spec.ts"] } },
-  "acceptance": {
-    "testFramework": "jest",
-    "command": "<pm-dlx> jest --config ./test/jest-test.json {{FILE}}"
-  }
+  "execution": { "smartTestRunner": { "testFilePatterns": ["**/*.spec.ts"] } }
 }
 ```
 
@@ -37,7 +30,7 @@ Commands here run **from the package directory**, so they invoke the package's o
 
 ## Template (non-JS package — Go example)
 
-A Go package in the same monorepo. No `<pm>`, no `typecheck` gate, `text`/`none` output formats:
+A Go package in the same monorepo. No `<pm>`, no `typecheck` gate, `text` lint output format:
 
 ```jsonc
 {
@@ -46,33 +39,28 @@ A Go package in the same monorepo. No `<pm>`, no `typecheck` gate, `text`/`none`
       "build": "go build ./...",
       "test": "go test ./...",
       "testScoped": "go test ./...",
-      "lint": "golangci-lint run",
-      "lintFix": "golangci-lint run --fix",
-      "formatFix": "gofmt -w ."
+      "lint": "golangci-lint run"
     },
-    "lintOutput": { "format": "text" },
-    "typecheckOutput": { "format": "none" }
+    "lintOutput": { "format": "text" }
   },
-  "execution": { "smartTestRunner": { "testFilePatterns": ["**/*_test.go"] } },
-  "acceptance": { "testFramework": "go-test", "command": "go test {{FILE}}" }
+  "execution": { "smartTestRunner": { "testFilePatterns": ["**/*_test.go"] } }
 }
 ```
 
-Python (`uv run pytest`/`uv run mypy src`/`uv run ruff check`) and Rust (`cargo test`/`cargo clippy`/`cargo fmt`) packages follow the same pattern — pull their command sets and flags from the language matrix.
+Python (`uv run pytest`/`uv run mypy src`/`uv run ruff check`) and Rust (`cargo test`/`cargo clippy`) packages follow the same pattern — pull their command sets and flags from the language matrix.
 
 ## Tokens
 - `{{files}}` — nax substitutes the changed source/test files for a scoped run.
-- `{{FILE}}` — nax substitutes a single acceptance test file.
 
 ## Test-framework variants
 
-| Framework | testFilePatterns | acceptance command |
+| Framework | testFilePatterns | testScoped |
 |:--|:--|:--|
-| Jest | `["**/*.spec.ts"]` (check `testRegex`) | `<pm-dlx> jest --config <cfg> {{FILE}}` |
-| Vitest | `["**/*.test.ts"]` (check `include`) | `<pm-dlx> vitest run {{FILE}}` |
-| bun:test | `["**/*.test.ts"]` | `bun test {{FILE}}` |
-| pytest | `["**/test_*.py", "**/*_test.py"]` | `pytest {{FILE}}` (or `uv run pytest {{FILE}}`) |
-| go test | `["**/*_test.go"]` | `go test {{FILE}}` |
+| Jest | `["**/*.spec.ts"]` (check `testRegex`) | `<pm-dlx> jest --config <cfg> {{files}} --passWithNoTests` |
+| Vitest | `["**/*.test.ts"]` (check `include`) | `<pm-dlx> vitest run {{files}}` |
+| bun:test | `["**/*.test.ts"]` | `bun test {{files}}` |
+| pytest | `["**/test_*.py", "**/*_test.py"]` | `pytest {{files}}` (or `uv run pytest {{files}}`) |
+| go test | `["**/*_test.go"]` | `go test ./...` (see the language matrix) |
 | cargo test | `["**/tests/**/*.rs", "**/src/**/*.rs"]` | `cargo test` |
 
 Always confirm the real convention from the framework config — do not guess. For Python under `uv`/`poetry`, prefix tool commands with `uv run`/`poetry run`.

@@ -50,10 +50,10 @@ Two roots, not interchangeable. Use these variables — never a cwd-relative pat
 | Location | What lives here |
 |:---------|:----------------|
 | `$OUTPUT_DIR/features/<feature>/` | `status.json`, `runs/` (logger JSONL) |
-| `$REPO_ROOT/.nax/features/<feature>/` | `prd.json`, `sessions/`, `stories/` |
-| `$GLOBAL_DIR/events/$(basename "$REPO_ROOT")/events.jsonl` | Pipeline lifecycle events |
+| `$REPO_ROOT/.nax/features/<feature>/` | `prd.json`, `sessions/` |
+| `$REPO_ROOT/.nax/features/<feature>/workflow/<runId>/` | Workflow run: `ledger.md`, `result.json`, `branch-review.json`, `feature-report.md`, and one `<storyId>/` dir per story (`brief.md`, `report.md`, `review.json`) |
+| `$GLOBAL_DIR/events/$(basename "$REPO_ROOT")/events.jsonl` | Run lifecycle events |
 | `$OUTPUT_DIR/prompt-audit/<feature>/` | Prompt audit (opt-in; `config.agent.promptAudit.dir` overrides) |
-| `$OUTPUT_DIR/review-audit/<feature>/` | Review audit (opt-in) |
 
 > Events are keyed on `basename(REPO_ROOT)`, **not** `PROJECT_KEY` — under a `name` override the two directories differ legitimately. Don't "correct" one to match the other.
 
@@ -62,34 +62,39 @@ Two roots, not interchangeable. Use these variables — never a cwd-relative pat
 ```bash
 cat "$OUTPUT_DIR/features/<feature>/status.json"
 ```
-Extract: `run.status` · `run.startedAt`/`completedAt`/`crashedAt` · `run.crashSignal` (15=SIGTERM, 9=SIGKILL) · `progress.{passed,failed,pending,blocked}` · `current` · `postRun.acceptance.status` · `postRun.regression.status` · `cost.spent`/`cost.limit` (flag if spent ≥ limit).
+Extract: `run.status` · `run.startedAt`/`completedAt`/`crashedAt` · `run.crashSignal` (15=SIGTERM, 9=SIGKILL) · `progress.{passed,failed,pending,blocked}` · `current` · `cost.spent`/`cost.limit` (flag if spent ≥ limit) · `workflow.step` · `workflow.outcome`/`url`/`passed` · `workflow.stories.<id>.{state,round}`.
+
+`nax workflow status -f <feature> -d "$REPO_ROOT" --json` prints the newest workflow run's outcome, its PR/MR URL and the open items (no step or per-story state). It exits `2` whenever the feature is not `ready` with nothing open, so exit 2 means "needs a human", not a crash.
 
 Missing file → suspect resolution before crash. If `ls "$OUTPUT_DIR/features/"` shows other features the root is right and the run truly wrote nothing (`[WARN] status.json not found — check events and session descriptors`). If it's empty, re-resolve Step 0 and say which root you tried.
 
 ## Step 2: Per-story state
 
+Per story, take `state` and `round` from `status.json` → `workflow.stories.<id>` (end states: `complete`, `complete-with-rulings`, `complete-gate-open`; `round` = story fix rounds used), and `title`, `status`, `dependencies` from the PRD:
 ```bash
 cat "$REPO_ROOT/.nax/features/<feature>/prd.json"
 ```
-Per story pull `id`, `title`, `status`, `attempts`, `escalations`, `priorErrors`, `dependencies`:
 ```
-US-001  "Implement search index"  failed   3 attempts  [escalated fast→balanced→powerful]
-US-002  "Add query endpoint"      blocked  0 attempts  [waiting on US-001]
+US-001  "Implement search index"  failed               round 5  [same 2 items open since round 3]
+US-002  "Add query endpoint"      blocked              -        [waiting on US-001]
+US-003  "Wire CLI flag"           complete-gate-open   round 1
 ```
-Print each failed story's last `priorErrors` entry below the table.
+Workflow fix rounds are not recorded in the PRD's `attempts`/`escalations`/`priorErrors` (they stay empty); the round-by-round history is in `ledger.md` (Step 3). Print each failed story's last ledger line below the table.
 
-## Step 3: Sessions and stage progress
+## Step 3: Sessions and workflow progress
 
 ```bash
 ls  "$REPO_ROOT/.nax/features/<feature>/sessions/"
 cat "$REPO_ROOT/.nax/features/<feature>/sessions/<sessionId>/descriptor.json"
 ```
-Pull `id`, `role`, `state`, `storyId`, `completedStages`, `lastActivityAt`. Terminal states are `COMPLETED`/`FAILED`; flag `FAILED` sessions and `RUNNING` ones idle >60s. Partial `completedStages` pinpoints the stalled stage.
+Pull `id`, `role`, `state`, `storyId`, `lastActivityAt`. Terminal states are `COMPLETED`/`FAILED`; flag `FAILED` sessions and `RUNNING` ones idle >60s.
 
-Then, per failed story, which `context-manifest-<stage>.json` files exist (`context`, `execution`, `acceptance-setup`) — missing = never reached:
+Then read the newest workflow run directory. `ledger.md` is the run's step-by-step log, one line per story transition plus `_run:` lines for the repo gates, branch review and branch fix:
 ```bash
-ls "$REPO_ROOT/.nax/features/<feature>/stories/<storyId>/"
+W=$(ls -td "$REPO_ROOT/.nax/features/<feature>/workflow/"*/ | head -1)
+cat "$W/ledger.md"
 ```
+Look for a story stuck in `fix round N/M` with the same open items each round, `DONE_WITH_CONCERNS` from the implementer, and `_run: repo gates red: <gate>` (written after the stories finish, before the branch review and branch fix; check the later `_run:` lines and `workflow.passed` to see whether the fix turned it green). For a failed story read `$W/<storyId>/report.md` (the implementer's report) and `$W/<storyId>/review.json` (the story review's open findings); for a branch-level failure read `$W/branch-review.json`.
 
 ## Step 4: Run timeline
 
@@ -106,13 +111,11 @@ Look for error-level entries near the end, and exit codes: 124 = timeout, 134 = 
 
 ## Step 5: Audits (only if asked)
 
-Skip unless the user asked for prompt or review audit.
+Skip unless the user asked for a prompt audit.
 
-**Prompt audit** — `<runId>.jsonl` files correlating with `status.json` → `run.id`. From the last entry print `ts`, `stage`, `storyId`, `callType`, `turn`, `durationMs` (>60000 suggests agent timeout), and `errorCode`/`errorMessage` on error entries. Nothing there → likely disabled (`config.agent.promptAudit.enabled`).
+**Prompt audit** — `<runId>.jsonl` files named by the workflow run id (the same id as the `workflow/<runId>/` directory, not `status.json` → `run.id`). From the last entry print `ts`, `stage`, `storyId`, `callType`, `turn`, `durationMs` (>60000 suggests agent timeout), and `errorCode`/`errorMessage` on error entries. Nothing there → likely disabled (`config.agent.promptAudit.enabled`).
 
-**Review audit** — print `reviewer` (semantic/adversarial), `passed`, `blockingThreshold`, `advisoryFindings` count, and flag `parsed: false` (parse error, heuristic fallback) and `failOpen: true` (degraded, result unreliable).
-
-> For cross-run **recurrence-demotion** telemetry (`advisoryFindings[].meta.coverageGap`) use the **nax-coverage-gap** skill — that asks whether demotion drops real bugs, distinct from this skill's single-run RCA.
+Review findings of a workflow run are not in a separate audit: read `$W/<storyId>/review.json` (story review) and `$W/branch-review.json` (branch review).
 
 ## Step 6: Report
 
@@ -144,8 +147,8 @@ RECOMMENDED ACTIONS
 | `[CRASH]` | Killed by signal — check system resources |
 | `[BLOCKED]` | Blocked by a failed dependency — fix that story first |
 | `[STALLED]` | Session FAILED, or RUNNING with stale activity — check agent timeout |
-| `[FAILED]` | Exhausted all escalation tiers — read `priorErrors` |
-| `[REVIEW]` | Review audit anomaly — parse error, failOpen, advisory drops |
+| `[FAILED]` | Story used all its fix rounds, or ended `complete-gate-open` — read its ledger lines and `review.json` |
+| `[REVIEW]` | Review anomaly — findings that never close across rounds, or a branch review that blocks the run |
 | `[COST]` | Stopped at cost limit — raise `cost.limit` |
 | `[PRECHECK]` | Precheck failed — dirty git, missing build tools, lockfile |
 | `[WARN]` | Non-blocking, worth noting |
@@ -155,11 +158,10 @@ RECOMMENDED ACTIONS
 | Indicators | Action |
 |:-----------|:-------|
 | `durationMs > 60000`, session `FAILED` | Agent timeout — retry with a `--profile` giving longer timeout or a stronger tier |
-| All 3 tiers in `escalations`, `status: failed` | Read `priorErrors` — a repeating identical error means the spec or test is wrong |
 | `run.status: precheck-failed`, no `story:started` | Check `git status`, build tools, and that the test command runs standalone |
-| `run.crashSignal` set, no `run:completed` | Check for OOM; retry `nax run -f <feature> --resume` |
-| `parsed: false` in review audit | Usually transient — retry; if persistent, inspect model output in prompt audit |
+| `run.crashSignal` set, no `run:completed` | Check for OOM; re-run `nax run -f <feature>` (stories already `passed` in the PRD are skipped) |
 | Many `blocked` stories, one root `failed` | Fix the root; the rest unblock on retry |
-| `postRun.acceptance.status: failed` | Read `postRun.acceptance.failedACs` |
+| Story at its last `fix round` in `ledger.md`, same items open each round | Read `<storyId>/review.json` — a finding that never closes usually means the spec or AC is wrong, not the code |
+| `_run: repo gates red: <gate>` in `ledger.md`, `workflow.passed` not true | The branch fix did not turn the gate green; run that gate's command from `.nax/config.json` in the repo |
 | `cost.spent >= cost.limit` | Raise `config.cost.limit` or trim prompts |
 | Empty `$OUTPUT_DIR`, "nothing ever ran" | Wrong root — re-resolve Step 0 against the `.identity` files before concluding this |
