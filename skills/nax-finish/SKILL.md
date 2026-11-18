@@ -25,7 +25,7 @@ After the approval, run the whole plan without further questions. Ask again only
 
 Run every `nax` command from `repoRoot` (the directory holding `.nax/`), or pass `-d <repoRoot>`.
 
-**Long commands.** `nax bot review` and `nax bot fix` run agent sessions, and `fix`'s ready pass also waits for CI (`workflow.timeouts.ciWaitMs`, default 20 minutes). Run them in the background (or with the longest tool timeout) and wait for the exit; a tool timeout is not a nax failure and never a reason to launch the command again.
+**Long commands.** `nax bot review` and `nax bot fix` run agent sessions, and `fix`'s ready pass also waits for CI (`workflow.timeouts.ciWaitMs`, default 20 minutes). Either can run for an hour. If your harness can run a command in the background and tell you when it ends, use that, keep the whole output (no `| tail`), and wait for that notice; never poll with `sleep`. Otherwise run it in the foreground with your longest tool timeout. A tool timeout is not a nax failure and never a reason to launch the command again.
 
 ## Step 1: Resolve the feature
 
