@@ -35,7 +35,9 @@ Run every `nax` command from `repoRoot` (the directory holding `.nax/`), or pass
 nax features resolve "<args>" --json
 ```
 
-Branch on `status`: `ok` -> record `featureName`; `ambiguous` (or `feature-not-found` with `candidates`) -> list the candidates, ask, re-run with the pick; `missing` / `feature-not-found` with no candidates -> show `checked` and ask; `not-a-nax-repo` -> tell the user this is not a nax repo (no `.nax/config.json`; run nax-setup first) and stop.
+With empty `args`, nax picks the feature for you when it can: one feature resolves directly, and with several it picks the one whose `prd.json` `branchName` is the checked-out branch (`"matchedBy": "branch"` in the JSON).
+
+Branch on `status`: `ok` -> record `featureName`; when `matchedBy` is `branch`, say in the announce line that the feature was picked from the current branch. `ambiguous` (empty `args`) -> first match the branch yourself, because older nax does not: read `git branch --show-current` (empty on a detached HEAD: skip the match) and each candidate's `.nax/features/<candidate>/prd.json` `branchName`; exactly one match -> use it, say so, and continue. Otherwise list the candidates (only the ones on the current branch when several match; else the 10 with the newest `.nax/features/<candidate>/workflow/*/result.json`, newest first, features with no result.json last, plus a count of the rest), ask, and re-run with the pick. `feature-not-found` with `candidates` (a name in `args` that matched nothing) -> list the candidates, ask, re-run with the pick; `missing` / `feature-not-found` with no candidates -> show `checked` and ask; `not-a-nax-repo` -> tell the user this is not a nax repo (no `.nax/config.json`; run nax-setup first) and stop.
 
 **Preflight.** `git fetch origin`, detect the base (`git remote show origin | grep 'HEAD branch'`, fallback `main`, then `master`), and run `git rev-list --count origin/<base>..HEAD`. `0` -> print `<featureName> is 0 commits ahead of <base> — already merged / nothing to finish.` and stop unless the user says to go on.
 
